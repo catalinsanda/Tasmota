@@ -232,6 +232,9 @@ enum UserSelectablePins {
   GPIO_C8_CO2_5K_TX, GPIO_C8_CO2_5K_RX, // C8-CO2-5K CO2 Sensor
   GPIO_V9240_TX, GPIO_V9240_RX,         //  V9240 serial interface
   GPIO_LD2402_TX, GPIO_LD2402_RX,       // HLK-LD2402
+#ifdef ESP32
+  GPIO_GNSS_NMEA_RX, GPIO_GNSS_NMEA_TX, // GNSS NMEA Receive and Transmit Data
+#endif
   GPIO_SENSOR_END };
 
 // Error as warning to rethink GPIO usage with max 2045
@@ -510,7 +513,10 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_TWAI_TX "|" D_SENSOR_TWAI_RX "|" D_SENSOR_TWAI_BO "|" D_SENSOR_TWAI_CLK "|"
   D_SENSOR_C8_CO2_5K_TX "|" D_SENSOR_C8_CO2_5K_RX "|"
   D_SENSOR_V9240_TX "|" D_SENSOR_V9240_RX "|"
-  D_SENSOR_LD2402_TX "|" D_SENSOR_LD2402_RX
+  D_SENSOR_LD2402_TX "|" D_SENSOR_LD2402_RX "|"
+#ifdef ESP32
+  D_SENSOR_GNSS_NMEA_RX "|" D_SENSOR_GNSS_NMEA_TX
+#endif
   ;
 
 const char kSensorNamesFixed[] PROGMEM =
@@ -1160,7 +1166,6 @@ const uint16_t kGpioNiceList[] PROGMEM = {
   AGPIO(GPIO_C8_CO2_5K_RX),                      // SC8-CO2-5K Serial interface
 #endif
 
-
 #ifdef ESP32
 #ifdef USE_ESP32_TWAI
 #if SOC_TWAI_SUPPORTED
@@ -1169,6 +1174,13 @@ const uint16_t kGpioNiceList[] PROGMEM = {
   AGPIO(GPIO_TWAI_BO) + AGMAX(MAX_TWAI),
   AGPIO(GPIO_TWAI_CLK) + AGMAX(MAX_TWAI),
 #endif
+#endif
+#endif
+
+#ifdef ESP32
+#ifdef USE_GNSS
+  AGPIO(GPIO_GNSS_NMEA_RX),                    // GNSS NMEA Receive Data
+  AGPIO(GPIO_GNSS_NMEA_TX),                    // GNSS NMEA Transmit Data
 #endif
 #endif
 

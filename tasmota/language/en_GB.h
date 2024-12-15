@@ -534,6 +534,10 @@
 #define D_SENSOR_DALI_TX                  "Dali TX"
 #define D_CONFIGURE_DALI                  "DALI"
 
+// xdrv_91_esp32_gnss.ino
+#define D_SENSOR_GNSS_NMEA_RX "GNSS NMEA RX"
+#define D_SENSOR_GNSS_NMEA_TX "GNSS NMEA TX"
+
 // xdrv_03_energy.ino
 #define D_ENERGY_TODAY "Energy Today"
 #define D_ENERGY_YESTERDAY "Energy Yesterday"
@@ -1323,5 +1327,17 @@
 // xnrg_25_v9240.ino
 #define D_SENSOR_V9240_TX "V9240 TX"
 #define D_SENSOR_V9240_RX "V9240 RX"
+
+// xdrv_93_esp32_gnss_ntrip.ino
+#define D_CONFIGURE_NTRIP                 "NTRIP"
+#define D_NTRIP_PARAMETERS                "Configure NTRIP Parameters"
+#define D_NTRIP_SERVER_1                  "Primary NTRIP Server"
+#define D_NTRIP_SERVER_2                  "Secondary NTRIP Server"
+#define D_NTRIP_CASTER                    "NTRIP Caster"
+#define D_NTRIP_HOST                      "Host"
+#define D_NTRIP_PORT                      "Port"
+#define D_NTRIP_MOUNT                     "Mount point"
+#define D_NTRIP_USERNAME                  "Username"
+#define D_NTRIP_PASSWORD                  "Password"
 
 #endif  // _LANGUAGE_EN_GB_H_

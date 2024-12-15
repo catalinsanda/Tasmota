@@ -93,6 +93,8 @@ const be_const_member_t lv_gpio_constants[] = {
     { "GPIO_INPUT", (int32_t) GPIO_INPUT },
     { "GPS_RX", (int32_t) GPIO_GPS_RX },
     { "GPS_TX", (int32_t) GPIO_GPS_TX },
+    { "GPIO_GNSS_NMEA_RX", (int32_t) GPIO_GNSS_NMEA_RX },
+    { "GPIO_GNSS_NMEA_TX", (int32_t) GPIO_GNSS_NMEA_TX },
     { "HALLEFFECT", (int32_t) GPIO_HALLEFFECT },
     { "HC8_RXD", (int32_t) GPIO_HC8_RXD },
     { "HDMI_CEC", (int32_t) GPIO_HDMI_CEC },
