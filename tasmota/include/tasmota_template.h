@@ -101,6 +101,7 @@ enum UserSelectablePins {
   GPIO_ADC_BUTTON, GPIO_ADC_BUTTON_INV,  // Analog Button
   GPIO_ADC_RANGE,                      // Analog Range
   GPIO_ADC_CT_POWER,                   // ANalog Current
+  GPIO_GNSS_NMEA_RX, GPIO_GNSS_NMEA_TX,  // GNSS NMEA Receive and Transmit Data
 #ifdef ESP32
   GPIO_WEBCAM_PWDN, GPIO_WEBCAM_RESET, GPIO_WEBCAM_XCLK,  // Webcam
   GPIO_WEBCAM_SIOD, GPIO_WEBCAM_SIOC,  // Webcam I2C
@@ -374,6 +375,7 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_ADC_BUTTON "|" D_SENSOR_ADC_BUTTON "_i|"
   D_SENSOR_ADC_RANGE "|"
   D_SENSOR_ADC_CT_POWER "|"
+  D_GPIO_GNSS_NMEA_RX "|" D_GPIO_GNSS_NMEA_TX "|" 
 #ifdef ESP32
   D_GPIO_WEBCAM_PWDN "|" D_GPIO_WEBCAM_RESET "|" D_GPIO_WEBCAM_XCLK "|"
   D_GPIO_WEBCAM_SIOD "|" D_GPIO_WEBCAM_SIOC "|"
@@ -892,6 +894,10 @@ const uint16_t kGpioNiceList[] PROGMEM = {
 #ifdef USE_TFMINIPLUS
   AGPIO(GPIO_TFMINIPLUS_TX),                     // TFmini Plus TX pin
   AGPIO(GPIO_TFMINIPLUS_RX),                     // TFmini Plus RX pin
+#endif
+#ifdef USE_GNSS
+  AGPIO(GPIO_GNSS_NMEA_RX),                    // GNSS NMEA Receive Data
+  AGPIO(GPIO_GNSS_NMEA_TX),                    // GNSS NMEA Transmit Data
 #endif
 
 /*-------------------------------------------------------------------------------------------*\

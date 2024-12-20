@@ -531,6 +531,10 @@
 #define D_SENSOR_DALI_TX                  "Dali TX"
 #define D_CONFIGURE_DALI                  "DALI"
 
+// xdrv_91_esp32_gnss.ino
+#define D_GPIO_GNSS_NMEA_RX "GNSS NMEA RX"
+#define D_GPIO_GNSS_NMEA_TX "GNSS NMEA TX"
+
 // xdrv_03_energy.ino
 #define D_ENERGY_TODAY "Energy Today"
 #define D_ENERGY_YESTERDAY "Energy Yesterday"
