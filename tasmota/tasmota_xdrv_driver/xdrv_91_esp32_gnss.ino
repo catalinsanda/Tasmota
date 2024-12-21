@@ -18,13 +18,16 @@
 
 #include <TinyGPSPlus.h>
 
-#define XDRV_91             91
-#define D_CMND_GNSS "GNSS"
+#define XDRV_91                 91
+#define D_CMND_GNSS             "GNSS"
+#define RTC_UPDATE_INTERVAL     (30 * 60)   // Every 30 minutes
+#define INVALIDATE_AFTER        30          // 30 seconds
 
 struct {
   uint32_t baudrate;
   uint8_t serial_config;
   uint8_t valid;
+  uint32_t last_valid;
   float latitude;
   float longitude;
   float altitude;
@@ -32,10 +35,14 @@ struct {
   float hdop;
   char time[32];
   char date[32];
+  char last_valid_time[32];
+  char nmea_buffer[128];
+  uint8_t nmea_index;
 } GNSSData;
 
 TinyGPSPlus gps;
 HardwareSerial *GNSSSerial = nullptr;
+uint32_t last_rtc_sync = 0;
 
 const char kGNSSCommands[] PROGMEM = D_CMND_GNSS "|"
   "Baudrate|"        // Set UART baudrate
@@ -66,7 +73,7 @@ void (* const GNSSCommand[])(void) PROGMEM = {
 
 void GNSSInit(void) {
   if (!GNSSData.baudrate) {
-    GNSSData.baudrate = 9600;  // Default baudrate for NMEA
+    GNSSData.baudrate = 115200;
   }
   GNSSData.valid = 0;
   
@@ -78,39 +85,78 @@ void GNSSInit(void) {
 }
 
 void GNSSEvery100ms(void) {
+  bool newData = false;
+  uint32_t current_time = Rtc.utc_time;
+  
   while (GNSSSerial && GNSSSerial->available() > 0) {
-    if (gps.encode(GNSSSerial->read())) {
-      GNSSData.valid = gps.location.isValid() && gps.date.isValid() && gps.time.isValid();
-      
-      if (GNSSData.valid) {
-        GNSSData.latitude = gps.location.lat();
-        GNSSData.longitude = gps.location.lng();
-        GNSSData.altitude = gps.altitude.meters();
-        GNSSData.satellites = gps.satellites.value();
-        GNSSData.hdop = gps.hdop.hdop();
-        
-        snprintf_P(GNSSData.time, sizeof(GNSSData.time), PSTR("%02d:%02d:%02d"),
-          gps.time.hour(), gps.time.minute(), gps.time.second());
-        snprintf_P(GNSSData.date, sizeof(GNSSData.date), PSTR("%04d-%02d-%02d"),
-          gps.date.year(), gps.date.month(), gps.date.day());
-          
-        // Update Tasmota's internal time if we have a valid fix
-        if (gps.time.isValid() && gps.date.isValid()) {
-          TIME_T tm;
-          tm.year = gps.date.year() - 1970;
-          tm.month = gps.date.month();
-          tm.day_of_month = gps.date.day();
-          tm.hour = gps.time.hour();
-          tm.minute = gps.time.minute();
-          tm.second = gps.time.second();
-          uint32_t epoch = MakeTime(tm);
-          RtcSetTime(epoch);
-          AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Time sync %s"), GNSSData.time);
-        }
-      }
+    char c = GNSSSerial->read();
+    
+    // Store character in NMEA buffer
+    if (c == '$') {  // Start of NMEA sentence
+      GNSSData.nmea_index = 0;
+    }
+    if (GNSSData.nmea_index < sizeof(GNSSData.nmea_buffer) - 1) {
+      GNSSData.nmea_buffer[GNSSData.nmea_index++] = c;
+    }
+    if (c == '\n') {  // End of NMEA sentence
+      GNSSData.nmea_buffer[GNSSData.nmea_index] = '\0';
+      // Log the complete NMEA sentence if debug is enabled
+      AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: NMEA %s"), GNSSData.nmea_buffer);
+    }
+    
+    if (gps.encode(c)) {
+      newData = true;
     }
   }
+  
+  if (newData) {
+    GNSSData.valid = gps.location.isValid() && gps.date.isValid() && gps.time.isValid();
+
+    if (GNSSData.valid)
+      GNSSData.last_valid = current_time;
+
+    if (GNSSData.valid) {
+      GNSSData.latitude = gps.location.lat();
+      GNSSData.longitude = gps.location.lng();
+      GNSSData.altitude = gps.altitude.meters();
+      GNSSData.satellites = gps.satellites.value();
+      GNSSData.hdop = gps.hdop.hdop();
+      
+      snprintf_P(GNSSData.time, sizeof(GNSSData.time), PSTR("%02d:%02d:%02d"),
+        gps.time.hour(), gps.time.minute(), gps.time.second());
+      snprintf_P(GNSSData.date, sizeof(GNSSData.date), PSTR("%04d-%02d-%02d"),
+        gps.date.year(), gps.date.month(), gps.date.day());
+        
+      // Update Tasmota's internal time if we have a valid fix
+      if (gps.time.isValid() && gps.date.isValid() && (current_time - last_rtc_sync) > RTC_UPDATE_INTERVAL) {
+        TIME_T tm;
+        tm.year = gps.date.year() - 1970;
+        tm.month = gps.date.month();
+        tm.day_of_month = gps.date.day();
+        tm.hour = gps.time.hour();
+        tm.minute = gps.time.minute();
+        tm.second = gps.time.second();
+        uint32_t epoch = MakeTime(tm);
+        RtcSetTime(epoch);
+        AddLog(LOG_LEVEL_INFO, PSTR("GNSS: RTC Time sync %s"), GNSSData.time);
+        last_rtc_sync = current_time;
+      }
+    }
+  } else {
+    if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER)
+      GNSSData.valid = false;
+  }
+
+  if (GNSSData.last_valid > 0) {
+    TIME_T last_valid_time_t;
+    BreakTime(current_time - GNSSData.last_valid, last_valid_time_t);
+    snprintf_P(GNSSData.last_valid_time, sizeof(GNSSData.last_valid_time), PSTR("%dT%02d:%02d:%02d"),
+      last_valid_time_t.days,  last_valid_time_t.hour, last_valid_time_t.minute, last_valid_time_t.second);
+  } else {
+    strlcpy(GNSSData.last_valid_time, PSTR("N/A"), sizeof(GNSSData.last_valid_time));
+  }
 }
+
 
 void GNSSShow(bool json) {
   if (json) {
@@ -125,6 +171,7 @@ void GNSSShow(bool json) {
 #ifdef USE_WEBSERVER
   } else {
     WSContentSend_PD(PSTR("{s}GNSS Fix{m}%s{e}"), GNSSData.valid ? PSTR("Yes") : PSTR("No"));
+    WSContentSend_PD(PSTR("{s}Last GNSS Fix{m}%s{e}"), GNSSData.last_valid_time);
     if (GNSSData.valid) {
       WSContentSend_PD(PSTR("{s}GNSS DateTime{m}%s %s{e}"), GNSSData.date, GNSSData.time);
       WSContentSend_PD(PSTR("{s}GNSS Location{m}%f,%f{e}"), GNSSData.latitude, GNSSData.longitude);
