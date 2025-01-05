@@ -1,5 +1,5 @@
 /*
-  xdrv_91_esp32_gnss.ino - GNDSS with NMEA support
+  xdrv_92_esp32_gnss.ino - GNDSS with NMEA support
   Copyright (C) 2025 Catalin Sanda
   This program is free software: you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 
 #include <TinyGPSPlus.h>
 
-#define XDRV_91                 91
+#define XDRV_92                 92
 #define D_CMND_GNSS             "GNSS"
 #define RTC_UPDATE_INTERVAL     (30 * 60)   // Every 30 minutes
 #define INVALIDATE_AFTER        30          // 30 seconds
@@ -183,11 +183,9 @@ void GNSSShow(bool json) {
   }
 }
 
-/*********************************************************************************************\
- * Interface
-\*********************************************************************************************/
 
-bool Xdrv91(uint32_t function) {
+
+bool Xdrv92(uint32_t function) {
   bool result = false;
 
   switch (function) {
