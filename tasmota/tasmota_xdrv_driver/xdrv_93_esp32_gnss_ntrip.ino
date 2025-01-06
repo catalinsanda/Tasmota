@@ -80,24 +80,24 @@ const char HTTP_FORM_NTRIP_SERVER[] PROGMEM =
       "</legend>"
       "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr 100px 1fr; gap:10px; align-items:center; margin-bottom:10px;'>"
         "<label for='ntrip_serv_host_%d' style='color:white;'>" D_NTRIP_HOST "</label>"
-        "<input type='text' id='ntrip_serv_host_%d' name='ntrip_serv_host_%d' value='%s' %s "
+        "<input type='text' id='ntrip_serv_host_%d' name='ntrip_serv_host_%d' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
         
         "<label for='ntrip_serv_port_%d' style='color:white;'>" D_NTRIP_PORT "</label>"
-        "<input type='number' id='ntrip_serv_port_%d' name='ntrip_serv_port_%d' value='%d' %s "
+        "<input type='number' id='ntrip_serv_port_%d' name='ntrip_serv_port_%d' value='%d' %s min='1' max='65535' placeholder='2101' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
-        
+
         "<label for='ntrip_serv_mount_%d' style='color:white;'>" D_NTRIP_MOUNT "</label>"
-        "<input type='text' id='ntrip_serv_mount_%d' name='ntrip_serv_mount_%d' value='%s' %s "
+        "<input type='text' id='ntrip_serv_mount_%d' name='ntrip_serv_mount_%d' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
       "</div>"
       "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr; gap:10px; align-items:center;'>"
         "<label for='ntrip_serv_user_%d' style='color:white;'>" D_NTRIP_USERNAME "</label>"
-        "<input type='text' id='ntrip_serv_user_%d' name='ntrip_serv_user_%d' value='%s' %s "
+        "<input type='text' id='ntrip_serv_user_%d' name='ntrip_serv_user_%d' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
         
         "<label for='ntrip_serv_pass_%d' style='color:white;'>" D_NTRIP_PASSWORD "</label>"
-        "<input type='text' id='ntrip_serv_pass_%d' name='ntrip_serv_pass_%d' value='%s' %s "
+        "<input type='text' id='ntrip_serv_pass_%d' name='ntrip_serv_pass_%d' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
       "</div>"
     "</fieldset>";
@@ -113,20 +113,20 @@ const char HTTP_FORM_NTRIP_CASTER[] PROGMEM =
       "</legend>"
       "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr 100px 1fr; gap:10px; align-items:center; margin-bottom:10px;'>"
         "<label for='ntrip_cast_port' style='color:white;'>" D_NTRIP_PORT "</label>"
-        "<input type='number' id='ntrip_cast_port' name='ntrip_cast_port' value='%d' %s "
+        "<input type='number' id='ntrip_cast_port' name='ntrip_cast_port' value='%d' %s min='1' max='65535' placeholder='2101' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
         
         "<label for='ntrip_cast_mount' style='color:white;'>" D_NTRIP_MOUNT "</label>"
-        "<input type='text' id='ntrip_cast_mount' name='ntrip_cast_mount' value='%s' %s "
+        "<input type='text' id='ntrip_cast_mount' name='ntrip_cast_mount' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
       "</div>"
       "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr; gap:10px; align-items:center;'>"
         "<label for='ntrip_cast_user' style='color:white;'>" D_NTRIP_USERNAME "</label>"
-        "<input type='text' id='ntrip_cast_user' name='ntrip_cast_user' value='%s' %s "
+        "<input type='text' id='ntrip_cast_user' name='ntrip_cast_user' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
         
         "<label for='ntrip_cast_pass' style='color:white;'>" D_NTRIP_PASSWORD "</label>"
-        "<input type='text' id='ntrip_cast_pass' name='ntrip_cast_pass' value='%s' %s "
+        "<input type='text' id='ntrip_cast_pass' name='ntrip_cast_pass' value='%s' %s maxlength='32' "
         "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
       "</div>"
       "<br>"
@@ -332,10 +332,11 @@ void HandleNtripConfiguration(void) {
     
     const uint8_t NUM_SERVERS = 2;
     const char* disabled_attr = "disabled";
+    const uint16_t DEFAULT_NTRIP_PORT = 2101;
    
     // Create servers HTML
     char* servers_html = nullptr;
-    for (uint8_t server_idx = 0; server_idx < NUM_SERVERS; server_idx++) {
+    for (uint8_t server_idx = 0; server_idx < sizeof(NtripSettings.server_settings) / sizeof(ntrip_server_settings_t); server_idx++) {
         uint8_t server_num = server_idx + 1;
         const ntrip_server_settings_t* server = &NtripSettings.server_settings[server_idx];
         
@@ -353,7 +354,7 @@ void HandleNtripConfiguration(void) {
             
             // Port field
             server_num, server_num, server_num,
-            server->port,
+            server->port ? server->port : DEFAULT_NTRIP_PORT,
             server->enabled ? "" : disabled_attr,
             
             // Mount field
@@ -398,7 +399,7 @@ void HandleNtripConfiguration(void) {
         NtripSettings.caster_settings.enabled ? "checked" : "",
         
         // Port field
-        NtripSettings.caster_settings.port,
+        NtripSettings.caster_settings.port ? NtripSettings.caster_settings.port : DEFAULT_NTRIP_PORT,
         NtripSettings.caster_settings.enabled ? "" : disabled_attr,
         
         // Mount field
