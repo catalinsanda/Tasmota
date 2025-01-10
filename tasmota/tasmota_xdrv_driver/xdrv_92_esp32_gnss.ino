@@ -16,12 +16,63 @@
 #ifdef ESP32
 #ifdef USE_GNSS
 
+#include <queue>
+#include <array>
+#include <cstring>
 #include <TinyGPSPlus.h>
 
 #define XDRV_92                 92
 #define D_CMND_GNSS             "GNSS"
 #define RTC_UPDATE_INTERVAL     (30 * 60)   // Every 30 minutes
 #define INVALIDATE_AFTER        30          // 30 seconds
+
+class GNSSParser {
+public:
+   static constexpr size_t BUFFER_SIZE = 2048;
+   static constexpr size_t MAX_MESSAGES = 10;
+
+   struct Message {
+       enum Type {
+           UNKNOWN,
+           NMEA,
+           RTCM3,
+           INVALID
+       };
+
+       Type type;
+       const uint8_t* data;
+       size_t length;
+       bool valid;
+       const char* error;
+   };
+
+   GNSSParser() = default;
+   ~GNSSParser() = default;
+
+   bool encode(uint8_t byte);
+   bool available() const;
+   Message getMessage();
+   void clear();
+
+private:
+   struct StoredMessage {
+       Message::Type type;
+       size_t start;
+       size_t length;
+       bool valid;
+       const char* error;
+   };
+
+   std::array<uint8_t, BUFFER_SIZE> buffer_{};
+   size_t write_pos_ = 0;
+   size_t read_pos_ = 0;
+   size_t bytes_available_ = 0;
+   std::queue<StoredMessage> message_queue_;
+
+   void addMessageToQueue(Message::Type type, size_t start, size_t length, 
+                         bool valid = true, const char* error = nullptr);
+   void scanBuffer();
+};
 
 struct {
   uint32_t baudrate;
@@ -41,17 +92,18 @@ struct {
 } GNSSData;
 
 TinyGPSPlus gps;
-HardwareSerial *GNSSSerial = nullptr;
+HardwareSerial *gnssSerial = nullptr;
 uint32_t last_rtc_sync = 0;
 
 const char kGNSSCommands[] PROGMEM = D_CMND_GNSS "|"
-  "Baudrate|"        // Set UART baudrate
-  "SerialConfig";    // Set UART configuration
+  "Baudrate|"     // Set UART baudrate
+  "SerialConfig|" // Set UART configuration
+  "Send";         // Send data to GNSS module
 
 void CmndGNSSBaudrate(void) {
-  if ((XdrvMailbox.payload >= 1200) && (XdrvMailbox.payload <= 115200)) {
+  if (XdrvMailbox.data_len > 0) {
     GNSSData.baudrate = XdrvMailbox.payload;
-    GNSSInit();  // Reinitialize with new baudrate
+    GNSSInit();
   }
   ResponseCmndNumber(GNSSData.baudrate);
 }
@@ -64,9 +116,20 @@ void CmndGNSSSerialConfig(void) {
   ResponseCmndNumber(GNSSData.serial_config);
 }
 
+void CmndGNSSSend(void) {
+  if (gnssSerial && XdrvMailbox.data_len > 0) {
+    gnssSerial->write(XdrvMailbox.data, XdrvMailbox.data_len);
+    gnssSerial->write("\r\n");
+    ResponseCmndChar(PSTR("Sent serial command"));
+  } else {
+      ResponseCmndError();
+  }
+}
+
 void (* const GNSSCommand[])(void) PROGMEM = {
   &CmndGNSSBaudrate,
-  &CmndGNSSSerialConfig
+  &CmndGNSSSerialConfig,
+  &CmndGNSSSend
 };
 
 /*********************************************************************************************/
@@ -75,11 +138,16 @@ void GNSSInit(void) {
   if (!GNSSData.baudrate) {
     GNSSData.baudrate = 115200;
   }
+
+  if (!GNSSData.serial_config) {
+    GNSSData.serial_config = SERIAL_8N1;
+  }
+
   GNSSData.valid = 0;
   
-  GNSSSerial = new HardwareSerial(1);
-  if (PinUsed(GPIO_GNSS_NMEA_RX) && PinUsed(GPIO_GNSS_NMEA_TX)) {
-    GNSSSerial->begin(GNSSData.baudrate, SERIAL_8N1, Pin(GPIO_GNSS_NMEA_RX), Pin(GPIO_GNSS_NMEA_TX));
+  gnssSerial = new HardwareSerial(1);
+  if (gnssSerial && PinUsed(GPIO_GNSS_NMEA_RX) && PinUsed(GPIO_GNSS_NMEA_TX)) {
+    gnssSerial->begin(GNSSData.baudrate, GNSSData.serial_config, Pin(GPIO_GNSS_NMEA_RX), Pin(GPIO_GNSS_NMEA_TX));
     AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Serial initialized at %d baud"), GNSSData.baudrate);
   }
 }
@@ -88,8 +156,8 @@ void GNSSEvery100ms(void) {
   bool newData = false;
   uint32_t current_time = Rtc.utc_time;
   
-  while (GNSSSerial && GNSSSerial->available() > 0) {
-    char c = GNSSSerial->read();
+  while (gnssSerial && gnssSerial->available() > 0) {
+    char c = gnssSerial->read();
     
     // Store character in NMEA buffer
     if (c == '$') {  // Start of NMEA sentence
@@ -136,6 +204,7 @@ void GNSSEvery100ms(void) {
         tm.hour = gps.time.hour();
         tm.minute = gps.time.minute();
         tm.second = gps.time.second();
+        tm.nanos = gps.time.centisecond() * 10000;
         uint32_t epoch = MakeTime(tm);
         RtcSetTime(epoch);
         AddLog(LOG_LEVEL_INFO, PSTR("GNSS: RTC Time sync %s"), GNSSData.time);
@@ -143,8 +212,9 @@ void GNSSEvery100ms(void) {
       }
     }
   } else {
-    if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER)
+    if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER) {
       GNSSData.valid = false;
+    }
   }
 
   if (GNSSData.last_valid > 0) {
@@ -183,8 +253,6 @@ void GNSSShow(bool json) {
   }
 }
 
-
-
 bool Xdrv92(uint32_t function) {
   bool result = false;
 
@@ -208,6 +276,135 @@ bool Xdrv92(uint32_t function) {
       break;
   }
   return result;
+}
+
+
+void GNSSParser::addMessageToQueue(Message::Type type, size_t start, size_t length, 
+                      bool valid, const char* error) {
+    if (message_queue_.size() >= MAX_MESSAGES) {
+        // Remove oldest message
+        StoredMessage& oldest = message_queue_.front();
+        size_t bytes_to_remove = oldest.length;
+        read_pos_ = (read_pos_ + bytes_to_remove) % BUFFER_SIZE;
+        bytes_available_ -= bytes_to_remove;
+        message_queue_.pop();
+    }
+    
+    message_queue_.push({type, start, length, valid, error});
+}
+
+void GNSSParser::scanBuffer() {
+    if (bytes_available_ < 3) return;  // Need at least 3 bytes for any message
+
+    size_t scan_pos = read_pos_;
+    size_t bytes_to_scan = bytes_available_;
+
+    while (bytes_to_scan >= 3) {
+        // Check for RTCM3 message
+        if (buffer_[scan_pos] == 0xD3) {
+            if (bytes_to_scan < 6) break;  // Need at least header + CRC
+
+            // Extract message length
+            uint16_t msg_length = ((buffer_[(scan_pos + 1) % BUFFER_SIZE] & 0x03) << 8) | 
+                                  buffer_[(scan_pos + 2) % BUFFER_SIZE];
+            size_t total_length = msg_length + 6;  // header(3) + payload + crc(3)
+
+            if (msg_length > 1023) {  // Invalid length
+                scan_pos = (scan_pos + 1) % BUFFER_SIZE;
+                bytes_to_scan--;
+                continue;
+            }
+
+            if (bytes_to_scan < total_length) break;  // Incomplete message
+
+            // Verify CRC here
+            bool valid = true;  // TODO: Add CRC check
+            
+            addMessageToQueue(Message::Type::RTCM3, scan_pos, total_length, valid);
+            scan_pos = (scan_pos + total_length) % BUFFER_SIZE;
+            bytes_to_scan -= total_length;
+            continue;
+        }
+
+        // Check for NMEA message
+        if (buffer_[scan_pos] == '$' || buffer_[scan_pos] == '!') {
+            bool found_end = false;
+            size_t msg_length = 0;
+
+            for (size_t i = 0; i < bytes_to_scan && i < 82; i++) {
+                size_t pos = (scan_pos + i) % BUFFER_SIZE;
+                if (buffer_[pos] == '\n') {
+                    msg_length = i + 1;
+                    found_end = true;
+                    break;
+                }
+            }
+
+            if (!found_end) break;  // Incomplete message
+
+            // Verify checksum here
+            bool valid = true;  // TODO: Add checksum verification
+
+            addMessageToQueue(Message::Type::NMEA, scan_pos, msg_length, valid);
+            scan_pos = (scan_pos + msg_length) % BUFFER_SIZE;
+            bytes_to_scan -= msg_length;
+            continue;
+        }
+
+        scan_pos = (scan_pos + 1) % BUFFER_SIZE;
+        bytes_to_scan--;
+    }
+}
+
+bool GNSSParser::encode(uint8_t byte) {
+    // Add byte to buffer
+    buffer_[write_pos_] = byte;
+    write_pos_ = (write_pos_ + 1) % BUFFER_SIZE;
+    bytes_available_++;
+
+    // Handle buffer overflow
+    if (bytes_available_ > BUFFER_SIZE) {
+        read_pos_ = (read_pos_ + 1) % BUFFER_SIZE;
+        bytes_available_ = BUFFER_SIZE;
+    }
+
+    // Scan for complete messages
+    scanBuffer();
+
+    return !message_queue_.empty();
+}
+
+bool GNSSParser::available() const {
+    return !message_queue_.empty();
+}
+
+GNSSParser::Message GNSSParser::getMessage() {
+    if (message_queue_.empty()) {
+        return {GNSSParser::Message::Type::UNKNOWN, nullptr, 0, false, "No message available"};
+    }
+
+    StoredMessage msg = message_queue_.front();
+    message_queue_.pop();
+
+    // Create contiguous buffer for message
+    static uint8_t msg_buffer[BUFFER_SIZE];  // Static to avoid stack allocation
+    
+    // Copy message data, handling wrap-around
+    for (size_t i = 0; i < msg.length; i++) {
+        size_t pos = (msg.start + i) % BUFFER_SIZE;
+        msg_buffer[i] = buffer_[pos];
+    }
+
+    return {msg.type, msg_buffer, msg.length, msg.valid, msg.error};
+}
+
+void GNSSParser::clear() {
+    while (!message_queue_.empty()) {
+        message_queue_.pop();
+    }
+    write_pos_ = 0;
+    read_pos_ = 0;
+    bytes_available_ = 0;
 }
 
 #endif  // USE_GNSS
