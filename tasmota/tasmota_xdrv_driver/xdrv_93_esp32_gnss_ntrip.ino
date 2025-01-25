@@ -150,10 +150,10 @@ typedef struct __ntrip_caster_settings {
 } ntrip_caster_settings_t;
 
 typedef struct __ntrip_settings {
-  uint32_t crc32;
-  uint32_t version;
-  ntrip_server_settings_t server_settings[2];
-  ntrip_caster_settings_t caster_settings;
+    uint32_t crc32;
+    uint32_t version;
+    ntrip_server_settings_t server_settings[2];
+    ntrip_caster_settings_t caster_settings;
 } ntrip_settings_t;
 
 ntrip_settings_t NtripSettings;
@@ -445,6 +445,24 @@ void HandleNtripConfiguration(void) {
 
 #endif USE_WEBSERVER
 
+void ProcessRTCMMessage(const uint8_t* data, size_t length) {
+    // RTCM messages must be at least 6 bytes (3 header + 3 CRC)
+    if (length < 6 || data[0] != 0xD3) return;
+    
+    // Get message length from header
+    uint16_t msg_length = ((data[1] & 0x03) << 8) | data[2];
+    if (msg_length + 6 != length) return;  // Invalid length
+    
+    // Get message type (12 bits after length)
+    uint16_t msg_type = (data[3] << 4) | ((data[4] & 0xF0) >> 4);
+
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NTRIP: RTCM type %d, length %d"), msg_type, msg_length);
+}
+
+
+
+void RTCMShowJSON() {
+}
 
 bool Xdrv93(uint32_t function) {
   bool result = false;
@@ -456,6 +474,7 @@ bool Xdrv93(uint32_t function) {
     case FUNC_EVERY_100_MSECOND:
       break;
     case FUNC_JSON_APPEND:
+      RTCMShowJSON();
       break;
     case FUNC_SAVE_SETTINGS:
       NtripSettingsSave();

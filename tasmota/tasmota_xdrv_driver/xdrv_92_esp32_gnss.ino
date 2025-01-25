@@ -22,6 +22,10 @@
 #include <TinyGPSPlus.h>
 #include <GNSSParser.h>
 
+#ifdef USE_NTRIP
+extern void ProcessRTCMMessage(const uint8_t* data, size_t length);
+#endif
+
 #define XDRV_92 92
 #define D_CMND_GNSS "GNSS"
 #define RTC_UPDATE_INTERVAL (30 * 60) // Every 30 minutes
@@ -133,32 +137,32 @@ void GNSSInit(void)
   }
 }
 
-void UpdateNMEACounter(const char *sentence)
+void UpdateNMEACounter(const char *sentence, uint8_t length)
 {
   GNSSData.total_nmea_sentences++;
 
-  if (strncmp(sentence, "$GPGGA", 6) == 0 || strncmp(sentence, "$GNGGA", 6) == 0)
+  if (length > 6 && strncmp(sentence, "$GPGGA", 6) == 0 || strncmp(sentence, "$GNGGA", 6) == 0)
   {
     GNSSData.nmea_counters.gga++;
   }
-  else if (strncmp(sentence, "$GPRMC", 6) == 0 || strncmp(sentence, "$GNRMC", 6) == 0)
+  else if (length > 6 && strncmp(sentence, "$GPRMC", 6) == 0 || strncmp(sentence, "$GNRMC", 6) == 0)
   {
     GNSSData.nmea_counters.rmc++;
   }
-  else if (strncmp(sentence, "$GPGLL", 6) == 0 || strncmp(sentence, "$GNGLL", 6) == 0)
+  else if (length > 6 && strncmp(sentence, "$GPGLL", 6) == 0 || strncmp(sentence, "$GNGLL", 6) == 0)
   {
     GNSSData.nmea_counters.gll++;
   }
-  else if (strncmp(sentence, "$GPGSA", 6) == 0 || strncmp(sentence, "$GNGSA", 6) == 0)
+  else if (length > 6 && strncmp(sentence, "$GPGSA", 6) == 0 || strncmp(sentence, "$GNGSA", 6) == 0)
   {
     GNSSData.nmea_counters.gsa++;
   }
-  else if (strncmp(sentence, "$GPGSV", 6) == 0 || strncmp(sentence, "$GNGSV", 6) == 0 ||
+  else if (length > 6 && strncmp(sentence, "$GPGSV", 6) == 0 || strncmp(sentence, "$GNGSV", 6) == 0 ||
            strncmp(sentence, "$GBGSV", 6) || strncmp(sentence, "$GAGSV", 6) || strncmp(sentence, "$GLGSV", 6))
   {
     GNSSData.nmea_counters.gsv++;
   }
-  else if (strncmp(sentence, "$GPVTG", 6) == 0 || strncmp(sentence, "$GNVTG", 6) == 0)
+  else if (length > 6 && strncmp(sentence, "$GPVTG", 6) == 0 || strncmp(sentence, "$GNVTG", 6) == 0)
   {
     GNSSData.nmea_counters.vtg++;
   }
@@ -170,9 +174,14 @@ void UpdateNMEACounter(const char *sentence)
 
 bool ProcessNMEAMessage(const char *nmea_message, uint8_t length)
 {
-  AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: NMEA %s"), nmea_message);
+  char log_buffer[256];
+  size_t copy_length = std::min((unsigned int)length, sizeof(log_buffer) - 1);
+  memcpy(log_buffer, nmea_message, copy_length);
+  log_buffer[copy_length] = '\0';
+  
+  AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: NMEA %s"), log_buffer);
 
-  UpdateNMEACounter(nmea_message);
+  UpdateNMEACounter(nmea_message, length);
 
   bool newData = false;
   for (int i = 0; i < length; i++)
@@ -280,97 +289,95 @@ void LogRawBuffer(const uint8_t *buffer, size_t length)
   }
 }
 
+void ProcessGNSSMessage(const GNSSParser::Message& msg, uint32_t current_time) {
+    switch (msg.type) {
+        case GNSSParser::Message::Type::NMEA: {
+            if (ProcessNMEAMessage((char*)msg.data, msg.length)) {
+                UpdateGNSSData(current_time);
+            }
+            break;
+        }
+        
+#ifdef USE_NTRIP
+        case GNSSParser::Message::Type::RTCM3:
+            ProcessRTCMMessage(msg.data, msg.length);
+            break;
+#endif
+            
+        default:
+            break;
+    }
+}
+
 void GNSSEvery100ms(void)
 {
-  uint32_t current_time = Rtc.utc_time;
-  static uint8_t read_buffer[SERIAL_INPUT_BUFFER_SIZE];
+    uint32_t current_time = Rtc.utc_time;
+    static uint8_t read_buffer[SERIAL_INPUT_BUFFER_SIZE];
 
-  if (gnssSerial && gnssSerial->available() > 0)
-  {
-    size_t bytes_available = gnssSerial->available();
-    size_t bytes_to_read = std::min(bytes_available, sizeof(read_buffer));
-    size_t bytes_read = gnssSerial->readBytes(read_buffer, bytes_to_read);
-
-    AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("GNSS: Read %d bytes from serial"), bytes_read);
-    LogRawBuffer(read_buffer, bytes_read);
-
-    size_t processed = 0;
-    while (processed < bytes_read)
+    if (gnssSerial && gnssSerial->available() > 0)
     {
-      size_t parser_space = gnssParser.available_write_space();
+        size_t bytes_available = gnssSerial->available();
+        size_t bytes_to_read = std::min(bytes_available, sizeof(read_buffer));
+        size_t bytes_read = gnssSerial->readBytes(read_buffer, bytes_to_read);
 
-      if (parser_space == 0)
-      {
-        while (gnssParser.available())
+        AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("GNSS: Read %d bytes from serial"), bytes_read);
+        LogRawBuffer(read_buffer, bytes_read);
+
+        size_t processed = 0;
+        while (processed < bytes_read)
         {
-          auto msg = gnssParser.getMessage();
-          if (msg.type == GNSSParser::Message::Type::NMEA)
-          {
-            char nmea_message[128];
-            uint8_t length = std::min(sizeof(nmea_message) - 1, msg.length);
-            strncpy(nmea_message, (char *)msg.data, length);
-            nmea_message[length] = 0;
+            size_t parser_space = gnssParser.available_write_space();
 
-            if (ProcessNMEAMessage(nmea_message, length))
+            if (parser_space == 0)
             {
-              UpdateGNSSData(current_time);
+                while (gnssParser.available())
+                {
+                    auto msg = gnssParser.getMessage();
+                    ProcessGNSSMessage(msg, current_time);
+                }
+
+                parser_space = gnssParser.available_write_space();
+
+                if (parser_space == 0 && !gnssParser.available())
+                {
+                    AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: No valid messages found and no space available, clearing parser"));
+                    gnssParser.clear();
+                    parser_space = gnssParser.available_write_space();
+                }
+
+                if (parser_space == 0)
+                {
+                    AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Parser buffer full, skipping data"));
+                    break;
+                }
             }
-          }
+
+            size_t chunk_size = std::min(parser_space, bytes_read - processed);
+
+            if (!gnssParser.encode(read_buffer + processed, chunk_size))
+            {
+                AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Failed to encode chunk of %d bytes"), chunk_size);
+                break;
+            }
+
+            processed += chunk_size;
+
+            while (gnssParser.available())
+            {
+                auto msg = gnssParser.getMessage();
+                ProcessGNSSMessage(msg, current_time);
+            }
         }
 
-        parser_space = gnssParser.available_write_space();
+        chars_received += bytes_read;
 
-        if (parser_space == 0 && !gnssParser.available())
+        if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER)
         {
-          AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: No valid messages found and no space available, clearing parser"));
-          gnssParser.clear();
-          parser_space = gnssParser.available_write_space();
+            GNSSData.valid = false;
         }
 
-        if (parser_space == 0)
-        {
-          AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Parser buffer full, skipping data"));
-          break;
-        }
-      }
-
-      size_t chunk_size = std::min(parser_space, bytes_read - processed);
-
-      if (!gnssParser.encode(read_buffer + processed, chunk_size))
-      {
-        AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Failed to encode chunk of %d bytes"), chunk_size);
-        break;
-      }
-
-      processed += chunk_size;
-
-      while (gnssParser.available())
-      {
-        auto msg = gnssParser.getMessage();
-        if (msg.type == GNSSParser::Message::Type::NMEA)
-        {
-          char nmea_message[128];
-          uint8_t length = std::min(sizeof(nmea_message) - 1, msg.length);
-          strncpy(nmea_message, (char *)msg.data, length);
-          nmea_message[length] = 0;
-
-          if (ProcessNMEAMessage(nmea_message, length))
-          {
-            UpdateGNSSData(current_time);
-          }
-        }
-      }
+        UpdateLastValidTime(current_time);
     }
-
-    chars_received += bytes_read;
-
-    if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER)
-    {
-      GNSSData.valid = false;
-    }
-
-    UpdateLastValidTime(current_time);
-  }
 }
 
 void GNSSShow(bool json)
@@ -399,14 +406,13 @@ void GNSSShow(bool json)
   {
     WSContentSend_PD(PSTR("{s}GNSS Fix{m}%s{e}"), GNSSData.valid ? PSTR("Yes") : PSTR("No"));
     WSContentSend_PD(PSTR("{s}Last GNSS Fix{m}%s{e}"), GNSSData.last_valid_time);
-    WSContentSend_PD(PSTR("{s}Characters received over serial{m}%d{e}"), chars_received);
     if (GNSSData.valid)
     {
-      WSContentSend_PD(PSTR("{s}GNSS DateTime{m}%s %s{e}"), GNSSData.date, GNSSData.time);
-      WSContentSend_PD(PSTR("{s}GNSS Location{m}%f,%f{e}"), GNSSData.latitude, GNSSData.longitude);
-      WSContentSend_PD(PSTR("{s}GNSS Altitude{m}%f m{e}"), GNSSData.altitude);
-      WSContentSend_PD(PSTR("{s}GNSS Satellites{m}%d{e}"), GNSSData.satellites);
-      WSContentSend_PD(PSTR("{s}GNSS HDOP{m}%f{e}"), GNSSData.hdop);
+      WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GNSS DateTime{m}%s %s{e}"), GNSSData.date, GNSSData.time);
+      WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GNSS Location{m}%f,%f{e}"), GNSSData.latitude, GNSSData.longitude);
+      WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GNSS Altitude{m}%f m{e}"), GNSSData.altitude);
+      WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GNSS Satellites{m}%d{e}"), GNSSData.satellites);
+      WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GNSS HDOP{m}%f{e}"), GNSSData.hdop);
     }
 
     WSContentSend_PD(PSTR("{s}Total NMEA Sentences{m}%d{e}"), GNSSData.total_nmea_sentences);
@@ -417,6 +423,7 @@ void GNSSShow(bool json)
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GSV Messages{m}%d{e}"), GNSSData.nmea_counters.gsv);
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• VTG Messages{m}%d{e}"), GNSSData.nmea_counters.vtg);
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Other NMEA Messages{m}%d{e}"), GNSSData.nmea_counters.other);
+    WSContentSend_PD(PSTR("{s}Characters received over serial{m}%d{e}"), chars_received);
 #endif // USE_WEBSERVER
   }
 }

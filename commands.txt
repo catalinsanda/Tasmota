@@ -1,0 +1,18 @@
+GNGGA 1
+GNRMC 1
+GNGSV 1
+GNGSA 1
+SAVECONFIG
+
+GNSSSend mode base time 60 1.5 2.5
+
+GNSSSend rtcm1033 com1 10
+GNSSSend rtcm1006 com1 10
+GNSSSend rtcm1074 com1 1
+GNSSSend rtcm1124 com1 1
+GNSSSend rtcm1084 com1 1
+GNSSSend rtcm1094 com1 1
+
+
+
+GNSSSend SAVECONFIG
