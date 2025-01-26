@@ -16,7 +16,9 @@
 #ifdef ESP32
 #ifdef USE_NTRIP
 
-#define XDRV_93                 93
+#define XDRV_93                     93
+#define MESSAGE_STATISTICS_COUNT    8
+
 
 /*********************************************************************************************\
  * Interface
@@ -131,6 +133,18 @@ const char HTTP_FORM_NTRIP_CASTER[] PROGMEM =
       "</div>"
       "<br>"
     "</fieldset>";
+
+typedef struct __message_statistics_entry {
+  uint16_t message_type;
+  uint32_t message_count;
+} message_statistics_entry;
+
+message_statistics_entry  message_statistics[MESSAGE_STATISTICS_COUNT];
+
+void InitializeMessageStatistics();
+void UpdateMessageStatistics(uint16_t msg_type);
+void RTCMShowJSON();
+void RTCMShowWebSensor();
 
 typedef struct __ntrip_server_settings {
   uint16_t port;
@@ -445,23 +459,74 @@ void HandleNtripConfiguration(void) {
 
 #endif USE_WEBSERVER
 
+void InitializeMessageStatistics() {
+    memset(message_statistics, 0, sizeof(message_statistics));
+}
+
+void UpdateMessageStatistics(uint16_t msg_type) {
+    for (int i = 0; i < MESSAGE_STATISTICS_COUNT - 1; i++) {
+        if (message_statistics[i].message_type == msg_type) {
+            message_statistics[i].message_count++;
+            return;
+        }
+        if (message_statistics[i].message_type == 0) {
+            message_statistics[i].message_type = msg_type;
+            message_statistics[i].message_count = 1;
+            return;
+        }
+    }
+    message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count++;
+}
+
 void ProcessRTCMMessage(const uint8_t* data, size_t length) {
     // RTCM messages must be at least 6 bytes (3 header + 3 CRC)
     if (length < 6 || data[0] != 0xD3) return;
     
-    // Get message length from header
     uint16_t msg_length = ((data[1] & 0x03) << 8) | data[2];
     if (msg_length + 6 != length) return;  // Invalid length
     
-    // Get message type (12 bits after length)
     uint16_t msg_type = (data[3] << 4) | ((data[4] & 0xF0) >> 4);
 
     AddLog(LOG_LEVEL_DEBUG, PSTR("NTRIP: RTCM type %d, length %d"), msg_type, msg_length);
+
+    UpdateMessageStatistics(msg_type);
 }
 
-
+void RTCMShowWebSensor() {
+    if (message_statistics[0].message_type > 0) {
+        WSContentSend_PD(PSTR("{s}RTCM Messages{m}{e}"));
+        for (int i = 0; i < MESSAGE_STATISTICS_COUNT - 1; i++) {
+            if (message_statistics[i].message_type > 0) {
+                WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Type %d{m}%d{e}"),
+                    message_statistics[i].message_type,
+                    message_statistics[i].message_count);
+            }
+        }
+        if (message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count > 0) {
+            WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Other Types{m}%d{e}"),
+                message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count);
+        }
+    }
+}
 
 void RTCMShowJSON() {
+    ResponseAppend_P(PSTR(",\"RTCM\":{\"Messages\":["));
+    
+    bool first = true;
+    for (int i = 0; i < MESSAGE_STATISTICS_COUNT - 1; i++) {
+        if (message_statistics[i].message_type > 0) {
+            if (!first) {
+                ResponseAppend_P(PSTR(","));
+            }
+            ResponseAppend_P(PSTR("{\"type\":%d,\"count\":%d}"),
+                message_statistics[i].message_type,
+                message_statistics[i].message_count);
+            first = false;
+        }
+    }
+    
+    ResponseAppend_P(PSTR("],\"Other\":%d}"), 
+        message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count);
 }
 
 bool Xdrv93(uint32_t function) {
@@ -470,6 +535,7 @@ bool Xdrv93(uint32_t function) {
   switch (function) {
     case FUNC_INIT:
       NtripSettingsLoad();
+      InitializeMessageStatistics();
       break;
     case FUNC_EVERY_100_MSECOND:
       break;
@@ -481,14 +547,15 @@ bool Xdrv93(uint32_t function) {
       break;
 #ifdef USE_WEBSERVER
     case FUNC_WEB_SENSOR:
+      RTCMShowWebSensor();
       break;
 // #ifdef USE_NTRIP_WEB_MENU
     case FUNC_WEB_ADD_BUTTON:
       WSContentSend_P(HTTP_BTN_MENU_NTRIP);
       break;
-      case FUNC_WEB_ADD_HANDLER:
-        WebServer_on(PSTR("/ntrip"), HandleNtripConfiguration);
-        break;
+    case FUNC_WEB_ADD_HANDLER:
+      WebServer_on(PSTR("/ntrip"), HandleNtripConfiguration);
+      break;
 // #endif // USE_NTRIP_WEB_MENU
 #endif  // USE_WEBSERVER
     case FUNC_COMMAND:
