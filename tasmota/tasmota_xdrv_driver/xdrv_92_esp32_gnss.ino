@@ -23,7 +23,7 @@
 #include <GNSSParser.h>
 
 #ifdef USE_NTRIP
-extern void ProcessRTCMMessage(const uint8_t* data, size_t length);
+extern void ProcessRTCMMessage(const uint8_t *data, size_t length);
 #endif
 
 #define XDRV_92 92
@@ -31,6 +31,108 @@ extern void ProcessRTCMMessage(const uint8_t* data, size_t length);
 #define RTC_UPDATE_INTERVAL (30 * 60) // Every 30 minutes
 #define INVALIDATE_AFTER 30           // 30 seconds
 #define SERIAL_INPUT_BUFFER_SIZE 2048
+#define SERIAL_STREAM_BUFFER_SIZE 4096
+
+class StreamingRequestHandler : public RequestHandler
+{
+private:
+  static NetworkClient *activeClient;
+  static bool isStreaming;
+  static uint32_t lastDataTime;          // Track last time data was sent
+  static const uint32_t TIMEOUT = 30000; // 30 seconds timeout
+
+public:
+  StreamingRequestHandler() {}
+
+  bool canHandle(HTTPMethod requestMethod, const String &requestUri) override
+  {
+    return requestMethod == HTTP_GET && requestUri == "/gnss/serial";
+  }
+
+  bool canHandle(WebServer &server, HTTPMethod requestMethod, const String &requestUri) override
+  {
+    return requestMethod == HTTP_GET && requestUri == "/gnss/serial";
+  }
+
+  virtual bool handle(WebServer &server, HTTPMethod requestMethod, const String &requestUri) override
+  {
+    if (!HttpCheckPriviledgedAccess())
+      return false;
+
+    if (!canHandle(server, requestMethod, requestUri))
+      return false;
+    
+    if (isStreaming) {
+      AddLog(LOG_LEVEL_INFO, PSTR("GNSS: There is already a streaming client connected"));
+      activeClient->println(F("HTTP/1.1 503 There is already a streaming client connected"));
+      activeClient->flush();
+      return true;
+    }
+    
+
+    activeClient = &server.client();
+    activeClient->setNoDelay(true);
+    activeClient->setSSE(true);
+
+    activeClient->println(F("HTTP/1.1 200 OK"));
+    activeClient->println(F("Content-Type: application/octet-stream"));
+    activeClient->println(F("Content-Disposition: attachment; filename=serial_dump.txt"));
+    activeClient->println(F("Connection: keep-alive"));  // Changed from close to keep-alive
+    activeClient->println(F("Keep-Alive: timeout=60"));  // Add keep-alive timeout
+    activeClient->println(F("Transfer-Encoding: chunked"));
+    activeClient->println();
+    activeClient->flush();
+
+    isStreaming = true;
+    lastDataTime = millis();
+
+    return true;
+  }
+
+  static void handleStreaming(const uint8_t *buffer, size_t length)
+  {
+    if (!isStreaming || !activeClient)
+    {
+      isStreaming = false;
+      activeClient = nullptr;
+      return;
+    }
+
+    if (!activeClient->connected())
+    {
+      isStreaming = false;
+      activeClient = nullptr;
+      return;
+    }
+
+    if ((millis() - lastDataTime) > TIMEOUT)
+    {
+      AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Stream timeout, closing connection"));
+      activeClient->stop();
+      isStreaming = false;
+      activeClient = nullptr;
+      return;
+    }
+
+    if (length > 0)
+    {
+      if (activeClient->printf("%X\r\n", length) &&
+          activeClient->write(buffer, length) == length &&
+          activeClient->println())
+      {
+        activeClient->flush();
+        lastDataTime = millis();
+      }
+      else
+      {
+        AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Failed to send data, closing connection"));
+        activeClient->stop();
+        isStreaming = false;
+        activeClient = nullptr;
+      }
+    }
+  }
+};
 
 struct NMEACounters
 {
@@ -59,6 +161,7 @@ struct
   char last_valid_time[32];
   NMEACounters nmea_counters;
   uint32_t total_nmea_sentences;
+  uint32_t stream_clients;
 } GNSSData;
 
 TinyGPSPlus gps;
@@ -66,6 +169,10 @@ GNSSParser gnssParser;
 HardwareSerial *gnssSerial = nullptr;
 uint32_t last_rtc_sync = 0;
 uint32_t chars_received = 0;
+
+NetworkClient *StreamingRequestHandler::activeClient = nullptr;
+bool StreamingRequestHandler::isStreaming = false;
+uint32_t StreamingRequestHandler::lastDataTime = 0;
 
 const char kGNSSCommands[] PROGMEM = D_CMND_GNSS "|"
                                                  "Baudrate|"     // Set UART baudrate
@@ -178,7 +285,7 @@ bool ProcessNMEAMessage(const char *nmea_message, uint8_t length)
   size_t copy_length = std::min((unsigned int)length, sizeof(log_buffer) - 1);
   memcpy(log_buffer, nmea_message, copy_length);
   log_buffer[copy_length] = '\0';
-  
+
   AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: NMEA %s"), log_buffer);
 
   UpdateNMEACounter(nmea_message, length);
@@ -289,95 +396,101 @@ void LogRawBuffer(const uint8_t *buffer, size_t length)
   }
 }
 
-void ProcessGNSSMessage(const GNSSParser::Message& msg, uint32_t current_time) {
-    switch (msg.type) {
-        case GNSSParser::Message::Type::NMEA: {
-            if (ProcessNMEAMessage((char*)msg.data, msg.length)) {
-                UpdateGNSSData(current_time);
-            }
-            break;
-        }
-        
-#ifdef USE_NTRIP
-        case GNSSParser::Message::Type::RTCM3:
-            ProcessRTCMMessage(msg.data, msg.length);
-            break;
-#endif
-            
-        default:
-            break;
+void ProcessGNSSMessage(const GNSSParser::Message &msg, uint32_t current_time)
+{
+  switch (msg.type)
+  {
+  case GNSSParser::Message::Type::NMEA:
+  {
+    if (ProcessNMEAMessage((char *)msg.data, msg.length))
+    {
+      UpdateGNSSData(current_time);
     }
+    break;
+  }
+
+#ifdef USE_NTRIP
+  case GNSSParser::Message::Type::RTCM3:
+    ProcessRTCMMessage(msg.data, msg.length);
+    break;
+#endif
+
+  default:
+    break;
+  }
 }
 
 void GNSSEvery100ms(void)
 {
-    uint32_t current_time = Rtc.utc_time;
-    static uint8_t read_buffer[SERIAL_INPUT_BUFFER_SIZE];
+  uint32_t current_time = Rtc.utc_time;
+  static uint8_t read_buffer[SERIAL_INPUT_BUFFER_SIZE];
 
-    if (gnssSerial && gnssSerial->available() > 0)
+  if (gnssSerial && gnssSerial->available() > 0)
+  {
+    size_t bytes_available = gnssSerial->available();
+    size_t bytes_to_read = std::min(bytes_available, sizeof(read_buffer));
+    size_t bytes_read = gnssSerial->readBytes(read_buffer, bytes_to_read);
+
+    StreamingRequestHandler::handleStreaming(read_buffer, bytes_read);
+
+    AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("GNSS: Read %d bytes from serial"), bytes_read);
+    LogRawBuffer(read_buffer, bytes_read);
+
+    size_t processed = 0;
+    while (processed < bytes_read)
     {
-        size_t bytes_available = gnssSerial->available();
-        size_t bytes_to_read = std::min(bytes_available, sizeof(read_buffer));
-        size_t bytes_read = gnssSerial->readBytes(read_buffer, bytes_to_read);
+      size_t parser_space = gnssParser.available_write_space();
 
-        AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("GNSS: Read %d bytes from serial"), bytes_read);
-        LogRawBuffer(read_buffer, bytes_read);
-
-        size_t processed = 0;
-        while (processed < bytes_read)
+      if (parser_space == 0)
+      {
+        while (gnssParser.available())
         {
-            size_t parser_space = gnssParser.available_write_space();
-
-            if (parser_space == 0)
-            {
-                while (gnssParser.available())
-                {
-                    auto msg = gnssParser.getMessage();
-                    ProcessGNSSMessage(msg, current_time);
-                }
-
-                parser_space = gnssParser.available_write_space();
-
-                if (parser_space == 0 && !gnssParser.available())
-                {
-                    AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: No valid messages found and no space available, clearing parser"));
-                    gnssParser.clear();
-                    parser_space = gnssParser.available_write_space();
-                }
-
-                if (parser_space == 0)
-                {
-                    AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Parser buffer full, skipping data"));
-                    break;
-                }
-            }
-
-            size_t chunk_size = std::min(parser_space, bytes_read - processed);
-
-            if (!gnssParser.encode(read_buffer + processed, chunk_size))
-            {
-                AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Failed to encode chunk of %d bytes"), chunk_size);
-                break;
-            }
-
-            processed += chunk_size;
-
-            while (gnssParser.available())
-            {
-                auto msg = gnssParser.getMessage();
-                ProcessGNSSMessage(msg, current_time);
-            }
+          auto msg = gnssParser.getMessage();
+          ProcessGNSSMessage(msg, current_time);
         }
 
-        chars_received += bytes_read;
+        parser_space = gnssParser.available_write_space();
 
-        if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER)
+        if (parser_space == 0 && !gnssParser.available())
         {
-            GNSSData.valid = false;
+          AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: No valid messages found and no space available, clearing parser"));
+          gnssParser.clear();
+          parser_space = gnssParser.available_write_space();
         }
 
-        UpdateLastValidTime(current_time);
+        if (parser_space == 0)
+        {
+          AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Parser buffer full, skipping data"));
+          break;
+        }
+      }
+
+      size_t chunk_size = std::min(parser_space, bytes_read - processed);
+
+      if (!gnssParser.encode(read_buffer + processed, chunk_size))
+      {
+        AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Failed to encode chunk of %d bytes"), chunk_size);
+        break;
+      }
+
+      processed += chunk_size;
+
+      while (gnssParser.available())
+      {
+        auto msg = gnssParser.getMessage();
+        ProcessGNSSMessage(msg, current_time);
+      }
     }
+
+    chars_received += bytes_read;
+
+    if ((current_time - GNSSData.last_valid) > INVALIDATE_AFTER)
+    {
+      GNSSData.valid = false;
+    }
+
+    UpdateLastValidTime(current_time);
+  }
 }
 
 void GNSSShow(bool json)
@@ -423,10 +536,24 @@ void GNSSShow(bool json)
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• GSV Messages{m}%d{e}"), GNSSData.nmea_counters.gsv);
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• VTG Messages{m}%d{e}"), GNSSData.nmea_counters.vtg);
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Other NMEA Messages{m}%d{e}"), GNSSData.nmea_counters.other);
+
     WSContentSend_PD(PSTR("{s}Characters received over serial{m}%d{e}"), chars_received);
+
+    WSContentSend_PD(PSTR("{s}Streaming Clients{m}%d{e}"), GNSSData.stream_clients);
 #endif // USE_WEBSERVER
   }
 }
+
+#ifdef USE_WEBSERVER
+void GNSSRegisterHandler(void)
+{
+  if (Webserver)
+  {
+    AddLog(LOG_LEVEL_INFO, PSTR("Adding streaming handler at /gnss/serial"));
+    Webserver->addHandler(new StreamingRequestHandler());
+  }
+}
+#endif // USE_WEBSERVER
 
 bool Xdrv92(uint32_t function)
 {
@@ -437,6 +564,11 @@ bool Xdrv92(uint32_t function)
   case FUNC_INIT:
     GNSSInit();
     break;
+#ifdef USE_WEBSERVER
+  case FUNC_WEB_ADD_HANDLER:
+    GNSSRegisterHandler();
+    break;
+#endif // USE_WEBSERVER
   case FUNC_EVERY_100_MSECOND:
     GNSSEvery100ms();
     break;
