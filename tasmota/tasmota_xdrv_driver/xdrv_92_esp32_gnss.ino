@@ -49,15 +49,6 @@ void handleGNSSSerialRequest(AsyncWebServerRequest *request);
 void handleRTCMRequest(AsyncWebServerRequest *request);
 #endif
 
-using GNSSStreamDataCallback = size_t (*)(uint8_t *buffer, size_t maxLen);
-
-size_t GNSSDefaultDataCallback(uint8_t *buffer, size_t maxLen)
-{
-  (void)buffer;
-  (void)maxLen;
-  return 0;
-}
-
 struct StreamClient
 {
   AsyncClient *client;
@@ -118,18 +109,12 @@ void (*const GNSSCommand[])(void) PROGMEM = {
     &CmndGNSSSerialConfig,
     &CmndGNSSSend};
 
-class GNSSAsyncStreamResponse : public AsyncWebServerResponse
-{
+class GNSSAsyncStreamResponse : public AsyncWebServerResponse {
 private:
-  GNSSStreamDataCallback _callback;
-  AsyncClient *_client;
-  uint8_t _buffer[2048];
-  size_t _bufferedLen;
+  AsyncClient* _client = nullptr;
 
 public:
-  GNSSAsyncStreamResponse(GNSSStreamDataCallback callback)
-      : _callback(callback), _client(nullptr), _bufferedLen(0)
-  {
+  GNSSAsyncStreamResponse() {
     _code = 200;
     _contentLength = 0;
     _contentType = "application/octet-stream";
@@ -137,80 +122,39 @@ public:
     _chunked = true;
   }
 
-  ~GNSSAsyncStreamResponse()
-  {
-    if (_client)
-    {
+  ~GNSSAsyncStreamResponse() {
+    if (_client) {
       handleDisconnect(_client);
     }
   }
 
-  bool _sourceValid() const override
-  {
+  bool _sourceValid() const override {
     return true;
   }
 
-  void _respond(AsyncWebServerRequest *request) override
-  {
+  void _respond(AsyncWebServerRequest* request) override {
     _client = request->client();
-    _state = RESPONSE_HEADERS;
-    String out;
-    _assembleHead(out, request->version());
-    _client->write(out.c_str(), out.length());
+    String header;
+    _assembleHead(header, request->version());
+    _client->write(header.c_str(), header.length());
     _state = RESPONSE_CONTENT;
-
-    _bufferedLen = _callback(_buffer, sizeof(_buffer));
-    if (_bufferedLen > 0)
-    {
-      _write();
-    }
   }
 
-  size_t _ack(AsyncWebServerRequest *request, size_t len, uint32_t time) override
-  {
-    _ackedLength += len;
-    if (_state == RESPONSE_CONTENT)
-    {
-      if (_bufferedLen == 0)
-      {
-        _bufferedLen = _callback(_buffer, sizeof(_buffer));
-      }
-      if (_bufferedLen > 0)
-      {
-        _write();
-      }
-    }
-    return _ackedLength;
+  size_t _ack(AsyncWebServerRequest* request, size_t len, uint32_t time) override {
+    return len;
   }
 
-private:
-  void _write()
-  {
-    if (_bufferedLen > 0 && _state == RESPONSE_CONTENT)
-    {
-      char chunkHeader[11];
-      sprintf(chunkHeader, "%X\r\n", _bufferedLen);
-      _client->write(chunkHeader, strlen(chunkHeader));
-      _client->write((char *)_buffer, _bufferedLen);
-      _client->write("\r\n", 2);
-      _sentLength += _bufferedLen;
-      _bufferedLen = 0;
-    }
-  }
-
-  static void handleDisconnect(AsyncClient *client)
-  {
+  static void handleDisconnect(AsyncClient* client) {
     AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Client disconnected"));
-    for (auto &cli : streamClients)
-    {
-      if (cli.client == client)
-      {
+    for (auto &cli : streamClients) {
+      if (cli.client == client) {
         cli.isActive = false;
         break;
       }
     }
   }
 };
+
 
 // Handler for GET "/gnss/serial"
 void handleGNSSSerialRequest(AsyncWebServerRequest *request)
@@ -227,7 +171,7 @@ void handleGNSSSerialRequest(AsyncWebServerRequest *request)
     return;
   }
 
-  AsyncWebServerResponse *response = new GNSSAsyncStreamResponse(GNSSDefaultDataCallback);
+  AsyncWebServerResponse *response = new GNSSAsyncStreamResponse();
 
   StreamClient newClient = {request->client(), millis(), true};
   streamClients.push_back(newClient);
