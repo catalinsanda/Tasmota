@@ -73,7 +73,7 @@ struct NMEACounters
 struct
 {
   uint32_t baudrate;
-  uint8_t serial_config;
+  uint32_t serial_config;
   uint8_t valid;
   uint32_t last_valid;
   float latitude;
@@ -89,16 +89,47 @@ struct
   uint32_t stream_clients;
 } GNSSData;
 
-TinyGPSPlus gps;
-GNSSParser gnssParser;
-HardwareSerial *gnssSerial = nullptr;
-uint32_t last_rtc_sync = 0;
-uint32_t chars_received = 0;
+struct SerialConfigMap
+{
+  const char *name;
+  uint32_t config;
+};
 
-const char kGNSSCommands[] PROGMEM = D_CMND_GNSS "|"
-                                                 "Baudrate|"     // Set UART baudrate
-                                                 "SerialConfig|" // Set UART configuration
-                                                 "Send";         // Send data to GNSS module
+const SerialConfigMap kSerialConfigs[] = {
+    {PSTR("SERIAL_5N1"), SERIAL_5N1},
+    {PSTR("SERIAL_6N1"), SERIAL_6N1},
+    {PSTR("SERIAL_7N1"), SERIAL_7N1},
+    {PSTR("SERIAL_8N1"), SERIAL_8N1},
+    {PSTR("SERIAL_5N2"), SERIAL_5N2},
+    {PSTR("SERIAL_6N2"), SERIAL_6N2},
+    {PSTR("SERIAL_7N2"), SERIAL_7N2},
+    {PSTR("SERIAL_8N2"), SERIAL_8N2},
+    {PSTR("SERIAL_5E1"), SERIAL_5E1},
+    {PSTR("SERIAL_6E1"), SERIAL_6E1},
+    {PSTR("SERIAL_7E1"), SERIAL_7E1},
+    {PSTR("SERIAL_8E1"), SERIAL_8E1},
+    {PSTR("SERIAL_5E2"), SERIAL_5E2},
+    {PSTR("SERIAL_6E2"), SERIAL_6E2},
+    {PSTR("SERIAL_7E2"), SERIAL_7E2},
+    {PSTR("SERIAL_8E2"), SERIAL_8E2},
+    {PSTR("SERIAL_5O1"), SERIAL_5O1},
+    {PSTR("SERIAL_6O1"), SERIAL_6O1},
+    {PSTR("SERIAL_7O1"), SERIAL_7O1},
+    {PSTR("SERIAL_8O1"), SERIAL_8O1},
+    {PSTR("SERIAL_5O2"), SERIAL_5O2},
+    {PSTR("SERIAL_6O2"), SERIAL_6O2},
+    {PSTR("SERIAL_7O2"), SERIAL_7O2},
+    {PSTR("SERIAL_8O2"), SERIAL_8O2}};
+
+typedef struct
+{
+  uint32_t crc32;
+  uint32_t version;
+  uint32_t baudrate;
+  uint8_t serial_config;
+} gnss_settings_t;
+
+gnss_settings_t GNSSSettings;
 
 void CmndGNSSBaudrate(void);
 void CmndGNSSSerialConfig(void);
@@ -109,12 +140,25 @@ void (*const GNSSCommand[])(void) PROGMEM = {
     &CmndGNSSSerialConfig,
     &CmndGNSSSend};
 
-class GNSSAsyncStreamResponse : public AsyncWebServerResponse {
+const char kGNSSCommands[] PROGMEM = D_CMND_GNSS "|"
+                                                 "Baudrate|"     // Set UART baudrate
+                                                 "SerialConfig|" // Set UART configuration
+                                                 "Send";         // Send data to GNSS module
+
+TinyGPSPlus gps;
+GNSSParser gnssParser;
+HardwareSerial *gnssSerial = nullptr;
+uint32_t last_rtc_sync = 0;
+uint32_t chars_received = 0;
+
+class GNSSAsyncStreamResponse : public AsyncWebServerResponse
+{
 private:
-  AsyncClient* _client = nullptr;
+  AsyncClient *_client = nullptr;
 
 public:
-  GNSSAsyncStreamResponse() {
+  GNSSAsyncStreamResponse()
+  {
     _code = 200;
     _contentLength = 0;
     _contentType = "application/octet-stream";
@@ -122,17 +166,21 @@ public:
     _chunked = true;
   }
 
-  ~GNSSAsyncStreamResponse() {
-    if (_client) {
+  ~GNSSAsyncStreamResponse()
+  {
+    if (_client)
+    {
       handleDisconnect(_client);
     }
   }
 
-  bool _sourceValid() const override {
+  bool _sourceValid() const override
+  {
     return true;
   }
 
-  void _respond(AsyncWebServerRequest* request) override {
+  void _respond(AsyncWebServerRequest *request) override
+  {
     _client = request->client();
     String header;
     _assembleHead(header, request->version());
@@ -140,14 +188,18 @@ public:
     _state = RESPONSE_CONTENT;
   }
 
-  size_t _ack(AsyncWebServerRequest* request, size_t len, uint32_t time) override {
+  size_t _ack(AsyncWebServerRequest *request, size_t len, uint32_t time) override
+  {
     return len;
   }
 
-  static void handleDisconnect(AsyncClient* client) {
+  static void handleDisconnect(AsyncClient *client)
+  {
     AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Client disconnected"));
-    for (auto &cli : streamClients) {
-      if (cli.client == client) {
+    for (auto &cli : streamClients)
+    {
+      if (cli.client == client)
+      {
         cli.isActive = false;
         break;
       }
@@ -155,6 +207,83 @@ public:
   }
 };
 
+const char *SerialConfigToString(uint32_t config)
+{
+  for (const auto &mapping : kSerialConfigs)
+  {
+    if (mapping.config == config)
+    {
+      return mapping.name;
+    }
+  }
+  return "UNKNOWN";
+}
+
+uint32_t StringToSerialConfig(const char *name)
+{
+  for (const auto &mapping : kSerialConfigs)
+  {
+    if (strcasecmp(mapping.name, name) == 0)
+    {
+      return mapping.config;
+    }
+  }
+  return SERIAL_8N1;
+}
+
+void GNSSSettingsSave(void)
+{
+  uint32_t crc32 = GetCfgCrc32((uint8_t *)&GNSSSettings + 4, sizeof(GNSSSettings) - 4);
+
+  if (crc32 != GNSSSettings.crc32)
+  {
+    GNSSSettings.crc32 = crc32;
+
+    char filename[20];
+    snprintf_P(filename, sizeof(filename), PSTR(TASM_FILE_DRIVER), XDRV_92);
+
+    AddLog(LOG_LEVEL_DEBUG, PSTR("GNSS: Saving settings to file %s"), filename);
+
+#ifdef USE_UFILESYS
+    if (!TfsSaveFile(filename, (const uint8_t *)&GNSSSettings, sizeof(GNSSSettings)))
+    {
+      AddLog(LOG_LEVEL_INFO, D_ERROR_FILE_NOT_FOUND);
+    }
+#else
+    AddLog(LOG_LEVEL_INFO, D_ERROR_FILESYSTEM_NOT_READY);
+#endif // USE_UFILESYS
+  }
+}
+
+void GNSSSettingsLoad(void)
+{
+  char filename[20];
+  snprintf_P(filename, sizeof(filename), PSTR(TASM_FILE_DRIVER), XDRV_92);
+
+#ifdef USE_UFILESYS
+  if (TfsLoadFile(filename, (uint8_t *)&GNSSSettings, sizeof(GNSSSettings)))
+  {
+    uint32_t crc32 = GetCfgCrc32((uint8_t *)&GNSSSettings + 4, sizeof(GNSSSettings) - 4);
+    if (crc32 != GNSSSettings.crc32)
+    {
+      memset(&GNSSSettings, 0, sizeof(GNSSSettings));
+      GNSSSettings.version = 1;
+      GNSSSettings.baudrate = 115200;
+      GNSSSettings.serial_config = SERIAL_8N1;
+    }
+  }
+  else
+  {
+    memset(&GNSSSettings, 0, sizeof(GNSSSettings));
+    GNSSSettings.version = 1;
+    GNSSSettings.baudrate = 115200;
+    GNSSSettings.serial_config = SERIAL_8N1;
+  }
+#endif // USE_UFILESYS
+
+  GNSSData.baudrate = GNSSSettings.baudrate;
+  GNSSData.serial_config = GNSSSettings.serial_config;
+}
 
 // Handler for GET "/gnss/serial"
 void handleGNSSSerialRequest(AsyncWebServerRequest *request)
@@ -268,6 +397,8 @@ void CmndGNSSBaudrate(void)
   if (XdrvMailbox.data_len > 0)
   {
     GNSSData.baudrate = XdrvMailbox.payload;
+    GNSSSettings.baudrate = XdrvMailbox.payload;
+    GNSSSettingsSave();
     GNSSInit();
   }
   ResponseCmndNumber(GNSSData.baudrate);
@@ -275,12 +406,31 @@ void CmndGNSSBaudrate(void)
 
 void CmndGNSSSerialConfig(void)
 {
-  if ((XdrvMailbox.payload >= 0) && (XdrvMailbox.payload <= 23))
+  if (XdrvMailbox.data_len > 0)
   {
-    GNSSData.serial_config = XdrvMailbox.payload;
-    GNSSInit();
+    if (XdrvMailbox.data[0] >= '0' && XdrvMailbox.data[0] <= '9')
+    {
+      // Handle numeric input
+      uint32_t config = (uint32_t)XdrvMailbox.payload;
+      if (config >= SERIAL_5N1 && config <= SERIAL_8O2)
+      {
+        GNSSData.serial_config = config;
+        GNSSSettings.serial_config = config;
+        GNSSSettingsSave();
+        GNSSInit();
+      }
+    }
+    else
+    {
+      // Handle string input
+      uint32_t config = StringToSerialConfig(XdrvMailbox.data);
+      GNSSData.serial_config = config;
+      GNSSSettings.serial_config = config;
+      GNSSSettingsSave();
+      GNSSInit();
+    }
   }
-  ResponseCmndNumber(GNSSData.serial_config);
+  ResponseCmndChar(SerialConfigToString(GNSSData.serial_config));
 }
 
 void CmndGNSSSend(void)
@@ -297,20 +447,12 @@ void CmndGNSSSend(void)
   }
 }
 
-
 void GNSSInit(void)
 {
-  if (!GNSSData.baudrate)
+  if (!GNSSSettings.baudrate)
   {
-    GNSSData.baudrate = 115200;
+    GNSSSettingsLoad();
   }
-
-  if (!GNSSData.serial_config)
-  {
-    GNSSData.serial_config = SERIAL_8N1;
-  }
-
-  GNSSData.valid = 0;
 
   if (gnssSerial)
   {
@@ -323,8 +465,11 @@ void GNSSInit(void)
   if (gnssSerial && PinUsed(GPIO_GNSS_NMEA_RX) && PinUsed(GPIO_GNSS_NMEA_TX))
   {
     gnssSerial->begin(GNSSData.baudrate, GNSSData.serial_config, Pin(GPIO_GNSS_NMEA_RX), Pin(GPIO_GNSS_NMEA_TX));
-    AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Serial initialized at %d baud"), GNSSData.baudrate);
+    AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Serial initialized at %d baud with config %s"),
+           GNSSData.baudrate, SerialConfigToString(GNSSData.serial_config));
   }
+
+  GNSSData.valid = 0;
 }
 
 void UpdateNMEACounter(const char *sentence, uint8_t length)
@@ -646,6 +791,9 @@ bool Xdrv92(uint32_t function)
 #endif // USE_WEBSERVER
   case FUNC_COMMAND:
     result = DecodeCommand(kGNSSCommands, GNSSCommand);
+    break;
+  case FUNC_SAVE_SETTINGS:
+    GNSSSettingsSave();
     break;
   }
   return result;
