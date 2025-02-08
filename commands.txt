@@ -4,9 +4,7 @@ GNSSSend GNGSV 1
 GNSSSend GNGSA 1
 GNSSSend SAVECONFIG
 
-GNSSSend freset
-
-GNSSSend mode base time 60 1.5 2.5
+GNSSSend mode base time 120 1.5 2.5
 
 GNSSSend rtcm1033 com1 10
 GNSSSend rtcm1006 com1 10
@@ -14,7 +12,32 @@ GNSSSend rtcm1074 com1 1
 GNSSSend rtcm1124 com1 1
 GNSSSend rtcm1084 com1 1
 GNSSSend rtcm1094 com1 1
+GNSSSend SAVECONFIG
 
+GNSSSend freset
 
+GNSSSend mode base time 60 1.5 2.5
 
+GNSSSend rtcm1004 com1 1   # GPS L1/L2 observables (extended)
+GNSSSend rtcm1006 com1 10  # Base station antenna coordinates + height (replaces 1005)
+GNSSSend rtcm1007 com1 10  # Antenna description (replaces 1008)
+GNSSSend rtcm1012 com1 1   # GLONASS L1/L2 observables (extended)
+GNSSSend rtcm1019 com1 3   # GPS Ephemerides
+GNSSSend rtcm1033 com1 10  # Receiver and antenna descriptors
+GNSSSend rtcm1074 com1 1   # GPS MSM4 (closest to MSM7)
+GNSSSend rtcm1084 com1 1   # GLONASS MSM4 (closest to MSM7)
+GNSSSend rtcm1094 com1 1   # Galileo MSM4 (closest to MSM7)
+GNSSSend rtcm1124 com1 1   # BeiDou MSM4 (closest to 1042)
+GNSSSend rtcm1127 com1 1   # BeiDou MSM7 (closest to 1045)
+
+1004(1),1005(10),1008(10),1012(1),1019(2),1020(2),1033(10),1042(3),1046(1),1077(1),1087(1),1097(1),1127(1),1230(30)
+
+GNSSSend SAVECONFIG
+
+GNSSSend RANGEB COM1 1
+GNSSSend GPSEPHB COM1 60
+GNSSSend BD3EPHB COM1 60
+GNSSSend BDSEPHB COM1 60
+GNSSSend GLOEPHB COM1 60
+GNSSSend GALEPHB COM1 60
 GNSSSend SAVECONFIG

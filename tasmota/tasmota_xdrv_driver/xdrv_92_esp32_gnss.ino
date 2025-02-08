@@ -47,6 +47,7 @@ void broadcastSerialData(const uint8_t *buffer, size_t length);
 void handleGNSSSerialRequest(AsyncWebServerRequest *request);
 #ifdef USE_NTRIP
 void handleRTCMRequest(AsyncWebServerRequest *request);
+void rtcmInitializeCasterEndpoint(AsyncWebServer *web_server);
 #endif
 
 struct StreamClient
@@ -126,7 +127,7 @@ typedef struct
   uint32_t crc32;
   uint32_t version;
   uint32_t baudrate;
-  uint8_t serial_config;
+  uint32_t serial_config;
 } gnss_settings_t;
 
 gnss_settings_t GNSSSettings;
@@ -317,19 +318,6 @@ void handleGNSSSerialRequest(AsyncWebServerRequest *request)
   request->send(response);
 }
 
-#ifdef USE_NTRIP
-// Handler for GET "/rtcm"
-void handleRTCMRequest(AsyncWebServerRequest *request)
-{
-  if (!HttpCheckPriviledgedAccess())
-  {
-    request->send(403, "text/plain", "Forbidden");
-    return;
-  }
-  // TODO: Implement NTRIP caster streaming
-  request->send(501, "text/plain", "Not Implemented");
-}
-#endif
 
 // Initializes the async server and registers endpoints.
 void initAsyncServer()
@@ -341,7 +329,7 @@ void initAsyncServer()
     asyncServer->on("/gnss/serial", HTTP_GET, handleGNSSSerialRequest);
 
 #ifdef USE_NTRIP
-    asyncServer->on("/rtcm", HTTP_GET, handleRTCMRequest);
+    rtcmInitializeCasterEndpoint(asyncServer);
 #endif
 
     asyncServer->begin();
