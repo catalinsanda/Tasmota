@@ -318,7 +318,6 @@ void handleGNSSSerialRequest(AsyncWebServerRequest *request)
   request->send(response);
 }
 
-
 // Initializes the async server and registers endpoints.
 void initAsyncServer()
 {
@@ -331,6 +330,9 @@ void initAsyncServer()
 #ifdef USE_NTRIP
     rtcmInitializeCasterEndpoint(asyncServer);
 #endif
+
+    asyncServer->onNotFound([](AsyncWebServerRequest *request)
+                            { request->send(404, "text/plain", "Not Found"); });
 
     asyncServer->begin();
     AddLog(LOG_LEVEL_INFO, PSTR("GNSS: Async server started on port 8080"));

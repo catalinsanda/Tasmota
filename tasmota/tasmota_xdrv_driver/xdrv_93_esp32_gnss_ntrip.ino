@@ -549,110 +549,151 @@ char *ext_snprintf_malloc_P_wrapper(const char *fmt_P, ...)
   return result;
 }
 
-class NTRIPAsyncStreamResponse : public AsyncWebServerResponse {
+class NTRIPAsyncStreamResponse : public AsyncWebServerResponse
+{
 private:
-    AsyncClient* _client = nullptr;
+  AsyncClient *_client = nullptr;
 
 public:
-    NTRIPAsyncStreamResponse() {
-        _code = 200;
-        _contentLength = 0;
-        _contentType = "application/octet-stream";
-        _sendContentLength = false;
-        _chunked = false;
-    }
+  NTRIPAsyncStreamResponse()
+  {
+    _code = 200;
+    _contentLength = 0;
+    _contentType = "application/octet-stream";
+    _sendContentLength = false;
+    _chunked = false;
+  }
 
-    ~NTRIPAsyncStreamResponse() {
-        if (_client) {
-            handleDisconnect(_client);
-        }
+  ~NTRIPAsyncStreamResponse()
+  {
+    if (_client)
+    {
+      handleDisconnect(_client);
     }
+  }
 
-    bool _sourceValid() const override {
-        return true;
-    }
+  bool _sourceValid() const override
+  {
+    return true;
+  }
 
-    void _respond(AsyncWebServerRequest *request) override {
-        _client = request->client();
-        String header;
-        _assembleHead(header, request->version());
-        _client->write(header.c_str(), header.length());
-        _state = RESPONSE_CONTENT;
-        
-        // Add client to NTRIP clients list
-        NTRIPClient newClient = {
-            _client,
-            millis(),
-            true,
-            request->url().substring(1)  // Remove leading slash from mountpoint
-        };
-        ntripClients.push_back(newClient);
-        ntripClientsTotal = ntripClients.size();
-    }
+  void _respond(AsyncWebServerRequest *request) override
+  {
+    _client = request->client();
+    String header;
+    _assembleHead(header, request->version());
+    _client->write(header.c_str(), header.length());
+    _state = RESPONSE_CONTENT;
 
-    size_t _ack(AsyncWebServerRequest *request, size_t len, uint32_t time) override {
-        return len;
-    }
+    // Add client to NTRIP clients list
+    NTRIPClient newClient = {
+        _client,
+        millis(),
+        true,
+        request->url().substring(1) // Remove leading slash from mountpoint
+    };
+    ntripClients.push_back(newClient);
+    ntripClientsTotal = ntripClients.size();
+  }
 
-    static void handleDisconnect(AsyncClient* client) {
-        AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Client disconnected"));
-        for (auto& cli : ntripClients) {
-            if (cli.client == client) {
-                cli.isActive = false;
-                break;
-            }
-        }
+  size_t _ack(AsyncWebServerRequest *request, size_t len, uint32_t time) override
+  {
+    return len;
+  }
+
+  static void handleDisconnect(AsyncClient *client)
+  {
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Client disconnected"));
+    for (auto &cli : ntripClients)
+    {
+      if (cli.client == client)
+      {
+        cli.isActive = false;
+        break;
+      }
     }
+  }
 };
 
 // Handler for GET "/MOUNT_POINT"
-void handleCasterRequest(AsyncWebServerRequest *request) {
-    if (!NtripSettings.caster_settings.enabled) {
-        request->send(503, "text/plain", "NTRIP Caster not enabled");
-        return;
+void handleCasterRequest(AsyncWebServerRequest *request)
+{
+  if (!NtripSettings.caster_settings.enabled || !caster_handler)
+  {
+    request->send(503, "text/plain", "NTRIP Caster not enabled");
+    return;
+  }
+
+  String mountpoint = request->url();
+  mountpoint.remove(0, 1); // Remove leading slash
+
+  if (mountpoint != NtripSettings.caster_settings.mountpoint)
+  {
+    if (mountpoint == "")
+    {
+      // Send source table
+      char *sourceTable = ext_snprintf_malloc_P_wrapper(NTRIP_SOURCE_TABLE,
+                                                        NtripSettings.caster_settings.mountpoint);
+      if (sourceTable)
+      {
+        request->send(200, "text/plain", sourceTable);
+        free(sourceTable);
+      }
+      else
+      {
+        request->send(500, "text/plain", "Internal Server Error");
+      }
+      return;
     }
+    request->send(404, "text/plain", "Mountpoint not found");
+    return;
+  }
 
-    String mountpoint = request->url();
-    mountpoint.remove(0, 1); // Remove leading slash
+  // Additional check for handler validity
+  if (strcmp(caster_mountpoint + 1, mountpoint.c_str()) != 0)
+  {
+    request->send(409, "text/plain", "Mountpoint configuration mismatch");
+    return;
+  }
 
-    if (mountpoint != NtripSettings.caster_settings.mountpoint) {
-        if (mountpoint == "") {
-            // Send source table
-            char *sourceTable = ext_snprintf_malloc_P_wrapper(NTRIP_SOURCE_TABLE,
-                                                    NtripSettings.caster_settings.mountpoint);
-            if (sourceTable) {
-                request->send(200, "text/plain", sourceTable);
-                free(sourceTable);
-            } else {
-                request->send(500, "text/plain", "Internal Server Error");
-            }
-            return;
-        }
-        request->send(404, "text/plain", "Mountpoint not found");
-        return;
+  // Check authorization if credentials are configured
+  if (strlen(NtripSettings.caster_settings.username) > 0)
+  {
+    if (!request->authenticate(NtripSettings.caster_settings.username,
+                               NtripSettings.caster_settings.password))
+    {
+      request->requestAuthentication();
+      return;
     }
+  }
 
-    // Check authorization if credentials are configured
-    if (strlen(NtripSettings.caster_settings.username) > 0) {
-        if (!request->authenticate(NtripSettings.caster_settings.username,
-                                 NtripSettings.caster_settings.password)) {
-            request->requestAuthentication();
-            return;
-        }
-    }
+  if (ntripClients.size() >= MAX_STREAMING_CLIENTS)
+  {
+    request->send(503, "text/plain", "Maximum number of clients reached");
+    return;
+  }
 
-    if (ntripClients.size() >= MAX_STREAMING_CLIENTS) {
-        request->send(503, "text/plain", "Maximum number of clients reached");
-        return;
-    }
+  AsyncWebServerResponse *response = new NTRIPAsyncStreamResponse();
+  if (!response)
+  {
+    AddLog(LOG_LEVEL_ERROR, PSTR("NTRIP: Failed to create response handler"));
+    request->send(500, "text/plain", "Failed to create response handler");
+    return;
+  }
 
-    AsyncWebServerResponse *response = new NTRIPAsyncStreamResponse();
-    
-    request->client()->setNoDelay(true);
-    response->addHeader("Content-Type", "application/octet-stream");
-    response->addHeader("Connection", "close");
+  if (!request->client())
+  {
+    delete response;
+    AddLog(LOG_LEVEL_ERROR, PSTR("NTRIP: Invalid client connection"));
+    request->send(500, "text/plain", "Invalid client connection");
+    return;
+  }
 
-    request->send(response);
+  request->client()->setNoDelay(true);
+  response->addHeader("Content-Type", "application/octet-stream");
+  response->addHeader("Connection", "close");
+
+  request->send(response);
 }
 
 void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server)
@@ -666,34 +707,53 @@ void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server)
   char mountpoint[34];
   snprintf(mountpoint, sizeof(mountpoint), PSTR("/%s"), NtripSettings.caster_settings.mountpoint);
 
-  if (NtripSettings.caster_settings.enabled)
-  {
-    if (strncmp(caster_mountpoint, mountpoint, std::min(sizeof(caster_mountpoint), sizeof(mountpoint))) != 0)
-    {
-      if (caster_handler)
-      {
-        web_server->removeHandler(caster_handler);
-        caster_handler = nullptr;
-        AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Removed Caster mountpoint"));
-      }
-
-      caster_handler = &web_server->on(mountpoint, HTTP_GET, handleCasterRequest);
-      strncpy(caster_mountpoint, mountpoint, sizeof(caster_mountpoint));
-      AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Added Caster mountpoint at %s"), mountpoint);
-    }
-    else
-    {
-      AddLog(LOG_LEVEL_DEBUG, PSTR("NTRIP: Caster endpoint not changed"));
-    }
-  }
-  else
+  // First handle disabling case
+  if (!NtripSettings.caster_settings.enabled)
   {
     if (caster_handler)
     {
       web_server->removeHandler(caster_handler);
       caster_handler = nullptr;
+      memset(caster_mountpoint, 0, sizeof(caster_mountpoint));
       AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Removed Caster mountpoint"));
     }
+    return;
+  }
+
+  // Check if mountpoint changed
+  if (strncmp(caster_mountpoint, mountpoint, std::min(sizeof(caster_mountpoint), sizeof(mountpoint))) != 0)
+  {
+    // Remove old handler if it exists
+    if (caster_handler)
+    {
+      web_server->removeHandler(caster_handler);
+      caster_handler = nullptr;
+      memset(caster_mountpoint, 0, sizeof(caster_mountpoint));
+      AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Removed old Caster mountpoint"));
+
+      // Clear existing clients
+      for (auto &client : ntripClients)
+      {
+        if (client.client && client.client->connected())
+        {
+          client.client->close();
+        }
+      }
+      ntripClients.clear();
+      ntripClientsTotal = 0;
+
+      // Add small delay to allow cleanup
+      delay(100);
+    }
+
+    // Add new handler
+    caster_handler = &web_server->on(mountpoint, HTTP_GET, handleCasterRequest);
+    strncpy(caster_mountpoint, mountpoint, sizeof(caster_mountpoint));
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Added new Caster mountpoint at %s"), mountpoint);
+  }
+  else
+  {
+    AddLog(LOG_LEVEL_DEBUG, PSTR("NTRIP: Caster endpoint not changed"));
   }
 }
 
