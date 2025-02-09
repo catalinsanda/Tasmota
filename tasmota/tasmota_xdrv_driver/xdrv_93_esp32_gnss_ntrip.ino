@@ -694,6 +694,7 @@ void handleCasterRequest(AsyncWebServerRequest *request)
   response->addHeader("Connection", "close");
 
   request->send(response);
+  AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Client connected to Caster from %s:%d"), request->client()->remoteIP().toString().c_str(), request->client()->remotePort());
 }
 
 void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server)
