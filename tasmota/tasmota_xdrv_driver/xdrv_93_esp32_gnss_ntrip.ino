@@ -24,7 +24,7 @@
 #define XDRV_93 93
 #define MESSAGE_STATISTICS_COUNT 8
 
-struct NTRIPClient
+struct RemoteNTRIPClient
 {
   AsyncClient *client;
   uint32_t lastDataTime;
@@ -32,8 +32,8 @@ struct NTRIPClient
   String mountpoint;
 };
 
-std::vector<NTRIPClient> ntripClients;
-uint32_t ntripClientsTotal = 0;
+std::vector<RemoteNTRIPClient> remoteNtripClients;
+uint32_t remoteNtripClientsTotal = 0;
 uint32_t rtcmBytesForwarded = 0;
 
 void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server);
@@ -586,14 +586,14 @@ public:
     _state = RESPONSE_CONTENT;
 
     // Add client to NTRIP clients list
-    NTRIPClient newClient = {
+    RemoteNTRIPClient newClient = {
         _client,
         millis(),
         true,
         request->url().substring(1) // Remove leading slash from mountpoint
     };
-    ntripClients.push_back(newClient);
-    ntripClientsTotal = ntripClients.size();
+    remoteNtripClients.push_back(newClient);
+    remoteNtripClientsTotal = remoteNtripClients.size();
   }
 
   size_t _ack(AsyncWebServerRequest *request, size_t len, uint32_t time) override
@@ -604,7 +604,7 @@ public:
   static void handleDisconnect(AsyncClient *client)
   {
     AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Client disconnected"));
-    for (auto &cli : ntripClients)
+    for (auto &cli : remoteNtripClients)
     {
       if (cli.client == client)
       {
@@ -667,7 +667,7 @@ void handleCasterRequest(AsyncWebServerRequest *request)
     }
   }
 
-  if (ntripClients.size() >= MAX_STREAMING_CLIENTS)
+  if (remoteNtripClients.size() >= MAX_STREAMING_CLIENTS)
   {
     request->send(503, "text/plain", "Maximum number of clients reached");
     return;
@@ -733,15 +733,15 @@ void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server)
       AddLog(LOG_LEVEL_INFO, PSTR("NTRIP: Removed old Caster mountpoint"));
 
       // Clear existing clients
-      for (auto &client : ntripClients)
+      for (auto &client : remoteNtripClients)
       {
         if (client.client && client.client->connected())
         {
           client.client->close();
         }
       }
-      ntripClients.clear();
-      ntripClientsTotal = 0;
+      remoteNtripClients.clear();
+      remoteNtripClientsTotal = 0;
 
       // Add small delay to allow cleanup
       delay(100);
@@ -786,7 +786,7 @@ void UpdateMessageStatistics(uint16_t msg_type)
 
 void broadcastRTCMData(const uint8_t *buffer, size_t length)
 {
-  if (length == 0 || ntripClients.empty())
+  if (length == 0 || remoteNtripClients.empty())
   {
     return;
   }
@@ -794,18 +794,18 @@ void broadcastRTCMData(const uint8_t *buffer, size_t length)
   uint32_t currentTime = millis();
 
   // Clean up inactive clients
-  ntripClients.erase(
-      std::remove_if(ntripClients.begin(), ntripClients.end(),
-                     [currentTime](const NTRIPClient &client) -> bool
+  remoteNtripClients.erase(
+      std::remove_if(remoteNtripClients.begin(), remoteNtripClients.end(),
+                     [currentTime](const RemoteNTRIPClient &client) -> bool
                      {
                        return !client.isActive ||
                               ((currentTime - client.lastDataTime) > CLIENT_TIMEOUT) ||
                               !client.client->connected();
                      }),
-      ntripClients.end());
+      remoteNtripClients.end());
 
   // Broadcast to remaining clients
-  for (auto &client : ntripClients)
+  for (auto &client : remoteNtripClients)
   {
     if (client.isActive && client.client->connected() && client.client->canSend())
     {
@@ -815,7 +815,7 @@ void broadcastRTCMData(const uint8_t *buffer, size_t length)
     }
   }
 
-  ntripClientsTotal = ntripClients.size();
+  remoteNtripClientsTotal = remoteNtripClients.size();
 }
 
 void ProcessRTCMMessage(const uint8_t *data, size_t length)
@@ -857,7 +857,7 @@ void RTCMShowWebSensor()
                        message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count);
     }
     WSContentSend_PD(PSTR("{s}RTCM Bytes Forwarded{m}%d{e}"), rtcmBytesForwarded);
-    WSContentSend_PD(PSTR("{s}NTRIP Connected Clients{m}%d{e}"), ntripClientsTotal);
+    WSContentSend_PD(PSTR("{s}NTRIP Connected Clients{m}%d{e}"), remoteNtripClientsTotal);
   }
 }
 
@@ -884,7 +884,7 @@ void RTCMShowJSON()
   ResponseAppend_P(PSTR("],\"Other\":%d,\"BytesForwarded\":%d,\"Clients\":%d}"),
                    message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count,
                    rtcmBytesForwarded,
-                   ntripClientsTotal);
+                   remoteNtripClientsTotal);
 }
 
 bool Xdrv93(uint32_t function)
