@@ -18,6 +18,7 @@
 
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
+#include <base64.hpp>
 #include <algorithm>
 #include <vector>
 
@@ -389,6 +390,266 @@ void Ntrip_Save_Settings(void)
     NtripProcessNewSettings();
   }
 }
+
+class NTRIPClient
+{
+public:
+  static constexpr uint32_t MAX_RETRIES = 5;
+  static constexpr uint32_t INITIAL_RETRY_DELAY_MS = 5000; // 5 seconds
+  static constexpr uint32_t MAX_RETRY_DELAY_MS = 300000;   // 5 minutes
+
+  NTRIPClient() : client(nullptr), connected(false), enabled(false),
+                  retryCount(0), nextRetryTime(0), lastConnectAttempt(0)
+  {
+    memset(host, 0, sizeof(host));
+    memset(mountpoint, 0, sizeof(mountpoint));
+    memset(username, 0, sizeof(username));
+    memset(password, 0, sizeof(password));
+  }
+
+  ~NTRIPClient()
+  {
+    disconnect();
+    if (client)
+    {
+      delete client;
+      client = nullptr;
+    }
+  }
+
+  void begin(const ntrip_server_settings_t &settings)
+  {
+    if (!settings.enabled)
+    {
+      enabled = false;
+      disconnect();
+      return;
+    }
+
+    // Store settings
+    enabled = true;
+    strlcpy(host, settings.host, sizeof(host));
+    port = settings.port;
+    strlcpy(mountpoint, settings.mountpoint, sizeof(mountpoint));
+    strlcpy(username, settings.username, sizeof(username));
+    strlcpy(password, settings.password, sizeof(password));
+
+    // Initialize client if needed
+    if (!client)
+    {
+      client = new AsyncClient();
+      if (!client)
+      {
+        AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Failed to create AsyncClient"));
+        return;
+      }
+
+      client->onConnect([this](void *obj, AsyncClient *c)
+                        { handleConnect(c); });
+      client->onDisconnect([this](void *obj, AsyncClient *c)
+                           { handleDisconnect(c); });
+      client->onError([this](void *obj, AsyncClient *c, int8_t error)
+                      { handleError(c, error); });
+      client->onData([this](void *obj, AsyncClient *c, void *data, size_t len)
+                     { handleData(c, (uint8_t *)data, len); });
+    }
+
+    // Start connection if not already connected
+    if (!connected && !client->connecting())
+    {
+      connect();
+    }
+  }
+
+  void stop()
+  {
+    enabled = false;
+    disconnect();
+  }
+
+  void sendData(const uint8_t *data, size_t length)
+  {
+    if (!enabled || !connected || !client || !client->connected())
+    {
+      return;
+    }
+
+    client->write(reinterpret_cast<const char *>(data), length);
+  }
+
+  bool isConnected() const
+  {
+    return connected;
+  }
+
+  void retryConnect()
+  {
+    if (!enabled || !client)
+    {
+      return;
+    }
+
+    uint32_t now = millis();
+
+    // Check if we need to retry connection
+    if (!connected && !client->connecting() && retryCount < MAX_RETRIES)
+    {
+      if (now >= nextRetryTime)
+      {
+        connect();
+      }
+    }
+  }
+
+private:
+  AsyncClient *client;
+  bool connected;
+  bool enabled;
+  uint32_t retryCount;
+  uint32_t nextRetryTime;
+  uint32_t lastConnectAttempt;
+
+  char host[33];
+  uint16_t port;
+  char mountpoint[33];
+  char username[33];
+  char password[33];
+
+  void connect()
+  {
+    if (!client || client->connected() || client->connecting())
+    {
+      return;
+    }
+
+    lastConnectAttempt = millis();
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Connecting to %s:%d..."), host, port);
+
+    if (!client->connect(host, port))
+    {
+      handleError(client, -1);
+      return;
+    }
+  }
+
+  void disconnect()
+  {
+    if (client && (client->connected() || client->connecting()))
+    {
+      client->close(true);
+    }
+    connected = false;
+  }
+
+  void handleConnect(AsyncClient *c)
+  {
+    if (c != client)
+      return;
+
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Connected to %s:%d"), host, port);
+    connected = true;
+    retryCount = 0;
+
+    // Send NTRIP request
+    char request[512];
+    createNTRIPRequest(request, sizeof(request));
+    client->write(request, strlen(request));
+  }
+
+  void handleDisconnect(AsyncClient *c)
+  {
+    if (c != client)
+      return;
+
+    connected = false;
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Disconnected from %s:%d"), host, port);
+
+    if (enabled && retryCount < MAX_RETRIES)
+    {
+      // Calculate next retry time with exponential backoff
+      uint32_t delay = INITIAL_RETRY_DELAY_MS * (1 << retryCount);
+      delay = std::min(delay, MAX_RETRY_DELAY_MS);
+      nextRetryTime = millis() + delay;
+      retryCount++;
+
+      AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Will retry in %d ms (attempt %d/%d)"),
+             delay, retryCount, MAX_RETRIES);
+    }
+  }
+
+  void handleError(AsyncClient *c, int8_t error)
+  {
+    if (c != client)
+      return;
+
+    AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Connection error %d"), error);
+    disconnect();
+  }
+
+  void handleData(AsyncClient *c, uint8_t *data, size_t len)
+  {
+    if (c != client || len == 0)
+      return;
+
+    // Convert to null-terminated string for response checking
+    char *response = (char *)malloc(len + 1);
+    if (!response)
+      return;
+
+    memcpy(response, data, len);
+    response[len] = '\0';
+
+    // Check response code
+    if (strstr(response, "200"))
+    {
+      AddLog(LOG_LEVEL_DEBUG, PSTR("NTRIPC: Server accepted connection"));
+    }
+    else if (strstr(response, "401"))
+    {
+      AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Authentication failed"));
+      disconnect();
+    }
+
+    free(response);
+  }
+
+  void createNTRIPRequest(char *buffer, size_t bufferSize)
+  {
+    char auth[192] = {0};
+
+    // Create authentication string if credentials provided
+    if (strlen(username) > 0)
+    {
+      const uint8_t credentials_buf_len = 65;
+      char credentials[credentials_buf_len] = {0};
+      snprintf_P(credentials, sizeof(credentials), PSTR("%s:%s"), username, password);
+      size_t credentials_len = strnlen(credentials, sizeof(credentials));
+
+      unsigned int encoded_len = encode_base64_length(credentials_len);
+      if (encoded_len > credentials_buf_len * 4 / 3 + 2) {
+        AddLog(LOG_LEVEL_ERROR, PSTR("Credentials too long"));
+        buffer[0] = '\0';
+      }
+      
+      char encoded[credentials_buf_len * 4 / 3 + 2] = {0};
+      encode_base64((unsigned char *)credentials,credentials_len, (unsigned char *)encoded);
+
+      snprintf_P(auth, sizeof(auth), PSTR("Authorization: Basic %s\r\n"), encoded);
+    }
+
+    // Build request
+    snprintf_P(buffer, bufferSize,
+               PSTR("GET /%s HTTP/1.1\r\n"
+                    "User-Agent: NTRIP ESP32Client/1.0\r\n"
+                    "Host: %s\r\n"
+                    "%s" // Auth header (if any)
+                    "Accept: application/x-rtcm\r\n"
+                    "\r\n"),
+               mountpoint,
+               host,
+               auth);
+  }
+};
 
 char *ext_vsnprintf_malloc_P_wrapper(const char *fmt_P, ...)
 {
