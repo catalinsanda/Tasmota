@@ -234,11 +234,6 @@ void NtripSettingsSave(void)
   }
 }
 
-void NtripProcessNewSettings()
-{
-  rtcmInitializeCasterEndpoint(nullptr);
-}
-
 void NtripSettingsLoad(void)
 {
   char filename[20];
@@ -394,9 +389,8 @@ void Ntrip_Save_Settings(void)
 class NTRIPClient
 {
 public:
-  static constexpr uint32_t MAX_RETRIES = 5;
-  static constexpr uint32_t INITIAL_RETRY_DELAY_MS = 5000; // 5 seconds
-  static constexpr uint32_t MAX_RETRY_DELAY_MS = 300000;   // 5 minutes
+  static constexpr uint32_t MAX_RETRIES = 1000;
+  static constexpr uint32_t RETRY_DELAY_MS = 5000; // 5 seconds
 
   NTRIPClient() : client(nullptr), connected(false), enabled(false),
                   retryCount(0), nextRetryTime(0), lastConnectAttempt(0)
@@ -566,14 +560,11 @@ private:
 
     if (enabled && retryCount < MAX_RETRIES)
     {
-      // Calculate next retry time with exponential backoff
-      uint32_t delay = INITIAL_RETRY_DELAY_MS * (1 << retryCount);
-      delay = std::min(delay, MAX_RETRY_DELAY_MS);
-      nextRetryTime = millis() + delay;
+      nextRetryTime = millis() + RETRY_DELAY_MS;
       retryCount++;
 
       AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Will retry in %d ms (attempt %d/%d)"),
-             delay, retryCount, MAX_RETRIES);
+      RETRY_DELAY_MS, retryCount, MAX_RETRIES);
     }
   }
 
@@ -626,13 +617,14 @@ private:
       size_t credentials_len = strnlen(credentials, sizeof(credentials));
 
       unsigned int encoded_len = encode_base64_length(credentials_len);
-      if (encoded_len > credentials_buf_len * 4 / 3 + 2) {
+      if (encoded_len > credentials_buf_len * 4 / 3 + 2)
+      {
         AddLog(LOG_LEVEL_ERROR, PSTR("Credentials too long"));
         buffer[0] = '\0';
       }
-      
+
       char encoded[credentials_buf_len * 4 / 3 + 2] = {0};
-      encode_base64((unsigned char *)credentials,credentials_len, (unsigned char *)encoded);
+      encode_base64((unsigned char *)credentials, credentials_len, (unsigned char *)encoded);
 
       snprintf_P(auth, sizeof(auth), PSTR("Authorization: Basic %s\r\n"), encoded);
     }
@@ -650,6 +642,27 @@ private:
                auth);
   }
 };
+
+NTRIPClient ntripClients[2];
+
+void initializeNTRIPClients()
+{
+  for (uint8_t i = 0; i < 2; i++)
+  {
+    ntripClients[i].begin(NtripSettings.server_settings[i]);
+  }
+  AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Initialized NTRIP clients"));
+}
+
+void NtripProcessNewSettings()
+{
+  for (uint8_t i = 0; i < 2; i++)
+  {
+    ntripClients[i].begin(NtripSettings.server_settings[i]);
+  }
+
+  rtcmInitializeCasterEndpoint(nullptr);
+}
 
 char *ext_vsnprintf_malloc_P_wrapper(const char *fmt_P, ...)
 {
@@ -1095,7 +1108,22 @@ void ProcessRTCMMessage(const uint8_t *data, size_t length)
 
   UpdateMessageStatistics(msg_type);
 
+  // Forward to connected NTRIP casters
+  for (uint8_t i = 0; i < 2; i++)
+  {
+    ntripClients[i].sendData(data, length);
+  }
+
+  // Broadcast to caster clients
   broadcastRTCMData(data, length);
+}
+
+void CheckNTRIPClients()
+{
+  for (uint8_t i = 0; i < 2; i++)
+  {
+    ntripClients[i].retryConnect();
+  }
 }
 
 void RTCMShowWebSensor()
@@ -1119,6 +1147,16 @@ void RTCMShowWebSensor()
     }
     WSContentSend_PD(PSTR("{s}RTCM Bytes Forwarded{m}%d{e}"), rtcmBytesForwarded);
     WSContentSend_PD(PSTR("{s}NTRIP Connected Clients{m}%d{e}"), remoteNtripClientsTotal);
+
+    for (uint8_t i = 0; i < 2; i++)
+    {
+      if (NtripSettings.server_settings[i].enabled)
+      {
+        WSContentSend_PD(PSTR("{s}NTRIP Client %d{m}%s{e}"),
+                         i + 1,
+                         ntripClients[i].isConnected() ? PSTR("Connected") : PSTR("Disconnected"));
+      }
+    }
   }
 }
 
@@ -1146,6 +1184,17 @@ void RTCMShowJSON()
                    message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count,
                    rtcmBytesForwarded,
                    remoteNtripClientsTotal);
+
+  for (uint8_t i = 0; i < 2; i++)
+  {
+    if (i > 0)
+      ResponseAppend_P(PSTR(","));
+    ResponseAppend_P(PSTR("{\"enabled\":%d,\"connected\":%d}"),
+                     NtripSettings.server_settings[i].enabled,
+                     ntripClients[i].isConnected());
+  }
+
+  ResponseAppend_P(PSTR("]}"));
 }
 
 bool Xdrv93(uint32_t function)
@@ -1158,9 +1207,11 @@ bool Xdrv93(uint32_t function)
     NtripSettingsLoad();
     InitializeMessageStatistics();
     ntrip_settings_initialized = true;
+    initializeNTRIPClients();
     rtcmInitializeCasterEndpoint(nullptr);
     break;
   case FUNC_EVERY_100_MSECOND:
+    CheckNTRIPClients();
     break;
   case FUNC_JSON_APPEND:
     RTCMShowJSON();
