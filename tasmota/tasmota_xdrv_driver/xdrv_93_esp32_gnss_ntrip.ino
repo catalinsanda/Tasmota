@@ -564,7 +564,7 @@ private:
       retryCount++;
 
       AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Will retry in %d ms (attempt %d/%d)"),
-      RETRY_DELAY_MS, retryCount, MAX_RETRIES);
+             RETRY_DELAY_MS, retryCount, MAX_RETRIES);
     }
   }
 
@@ -608,7 +608,7 @@ private:
   {
     char auth[192] = {0};
 
-    // Create authentication string if credentials provided
+    // Create the authentication header if credentials are provided.
     if (strlen(username) > 0)
     {
       const uint8_t credentials_buf_len = 65;
@@ -621,6 +621,7 @@ private:
       {
         AddLog(LOG_LEVEL_ERROR, PSTR("Credentials too long"));
         buffer[0] = '\0';
+        return;
       }
 
       char encoded[credentials_buf_len * 4 / 3 + 2] = {0};
@@ -629,13 +630,13 @@ private:
       snprintf_P(auth, sizeof(auth), PSTR("Authorization: Basic %s\r\n"), encoded);
     }
 
-    // Build request
     snprintf_P(buffer, bufferSize,
-               PSTR("GET /%s HTTP/1.1\r\n"
-                    "User-Agent: NTRIP ESP32Client/1.0\r\n"
+               PSTR("POST /%s HTTP/1.1\r\n"
+                    "User-Agent: NTRIP ESP32Source/1.0\r\n"
                     "Host: %s\r\n"
-                    "%s" // Auth header (if any)
-                    "Accept: application/x-rtcm\r\n"
+                    "%s"
+                    "Content-Type: application/x-rtcm\r\n"
+                    "Ntrip-Version: Ntrip/2.0\r\n"
                     "\r\n"),
                mountpoint,
                host,
@@ -980,7 +981,7 @@ void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server)
     return;
 
   char mountpoint[34];
-  snprintf(mountpoint, sizeof(mountpoint), PSTR("/%s"), NtripSettings.caster_settings.mountpoint);
+  snprintf_P(mountpoint, sizeof(mountpoint), PSTR("/%s"), NtripSettings.caster_settings.mountpoint);
 
   // First handle disabling case
   if (!NtripSettings.caster_settings.enabled)
