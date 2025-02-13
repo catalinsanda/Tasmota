@@ -35,7 +35,9 @@ struct RemoteNTRIPClient
 
 std::vector<RemoteNTRIPClient> remoteNtripClients;
 uint32_t remoteNtripClientsTotal = 0;
-uint32_t rtcmBytesForwarded = 0;
+uint32_t rtcmBytesCasterForwarded = 0;  // Bytes forwarded by caster to clients
+uint32_t rtcmBytesServerForwarded = 0;  // Bytes forwarded by server to remote casters
+
 
 void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server);
 void handleCasterRequest(AsyncWebServerRequest *request);
@@ -1086,7 +1088,7 @@ void broadcastRTCMData(const uint8_t *buffer, size_t length)
     {
       client.client->write(reinterpret_cast<const char *>(buffer), length);
       client.lastDataTime = currentTime;
-      rtcmBytesForwarded += length;
+      rtcmBytesCasterForwarded += length;
     }
   }
 
@@ -1109,10 +1111,14 @@ void ProcessRTCMMessage(const uint8_t *data, size_t length)
 
   UpdateMessageStatistics(msg_type);
 
-  // Forward to connected NTRIP casters
+  // Forward to connected NTRIP casters and track bytes
   for (uint8_t i = 0; i < 2; i++)
   {
-    ntripClients[i].sendData(data, length);
+    if (ntripClients[i].isConnected())
+    {
+      ntripClients[i].sendData(data, length);
+      rtcmBytesServerForwarded += length;
+    }
   }
 
   // Broadcast to caster clients
@@ -1146,14 +1152,21 @@ void RTCMShowWebSensor()
       WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Other Types{m}%d{e}"),
                        message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count);
     }
-    WSContentSend_PD(PSTR("{s}RTCM Bytes Forwarded{m}%d{e}"), rtcmBytesForwarded);
-    WSContentSend_PD(PSTR("{s}NTRIP Connected Clients{m}%d{e}"), remoteNtripClientsTotal);
+
+    // NTRIP Caster Statistics
+    WSContentSend_PD(PSTR("{s}NTRIP Caster{m}{e}"));
+    WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Connected Clients{m}%d{e}"), remoteNtripClientsTotal);
+    WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Bytes Forwarded{m}%d{e}"), rtcmBytesCasterForwarded);
+
+    // NTRIP Server Statistics
+    WSContentSend_PD(PSTR("{s}NTRIP Server{m}{e}"));
+    WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Bytes Forwarded{m}%d{e}"), rtcmBytesServerForwarded);
 
     for (uint8_t i = 0; i < 2; i++)
     {
       if (NtripSettings.server_settings[i].enabled)
       {
-        WSContentSend_PD(PSTR("{s}NTRIP Client %d{m}%s{e}"),
+        WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Server %d Status{m}%s{e}"),
                          i + 1,
                          ntripClients[i].isConnected() ? PSTR("Connected") : PSTR("Disconnected"));
       }
@@ -1181,11 +1194,13 @@ void RTCMShowJSON()
     }
   }
 
-  ResponseAppend_P(PSTR("],\"Other\":%d,\"BytesForwarded\":%d,\"Clients\":%d}"),
+  ResponseAppend_P(PSTR("],\"Other\":%d,\"Caster\":{\"BytesForwarded\":%d,\"Clients\":%d},\"Server\":{\"BytesForwarded\":%d"),
                    message_statistics[MESSAGE_STATISTICS_COUNT - 1].message_count,
-                   rtcmBytesForwarded,
-                   remoteNtripClientsTotal);
+                   rtcmBytesCasterForwarded,
+                   remoteNtripClientsTotal,
+                   rtcmBytesServerForwarded);
 
+  ResponseAppend_P(PSTR(",\"Status\":["));
   for (uint8_t i = 0; i < 2; i++)
   {
     if (i > 0)
@@ -1194,8 +1209,7 @@ void RTCMShowJSON()
                      NtripSettings.server_settings[i].enabled,
                      ntripClients[i].isConnected());
   }
-
-  ResponseAppend_P(PSTR("]}"));
+  ResponseAppend_P(PSTR("]}}}"));
 }
 
 bool Xdrv93(uint32_t function)

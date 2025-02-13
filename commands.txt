@@ -2,6 +2,7 @@ GNSSSend GNGGA 1
 GNSSSend GNRMC 1
 GNSSSend GNGSV 1
 GNSSSend GNGSA 1
+GNSSSend GNGLL 1
 GNSSSend SAVECONFIG
 
 GNSSSend mode base time 120 1.5 2.5
@@ -13,6 +14,13 @@ GNSSSend rtcm1124 com1 1
 GNSSSend rtcm1084 com1 1
 GNSSSend rtcm1094 com1 1
 GNSSSend SAVECONFIG
+
+GNSSSend rtcm1019 com1 30
+GNSSSend rtcm1020 com1 30
+GNSSSend rtcm1044 com1 30
+GNSSSend rtcm1045 com1 30
+GNSSSend SAVECONFIG
+
 
 GNSSSend freset
 
@@ -41,3 +49,14 @@ GNSSSend BDSEPHB COM1 60
 GNSSSend GLOEPHB COM1 60
 GNSSSend GALEPHB COM1 60
 GNSSSend SAVECONFIG
+
+
+GNSSSend mode base time 60
+GNSSSend rtcm1006 com1 10
+GNSSSend rtcm1033 com1 10
+GNSSSend rtcm1077 com1 1
+GNSSSend rtcm1087 com1 1
+GNSSSend rtcm1097 com1 1
+GNSSSend rtcm1127 com1 1
+GNSSSend saveconfig
+GNSSSend reset
