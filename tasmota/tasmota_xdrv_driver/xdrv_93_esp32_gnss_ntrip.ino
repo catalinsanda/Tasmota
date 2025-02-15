@@ -24,6 +24,7 @@
 
 #define XDRV_93 93
 #define MESSAGE_STATISTICS_COUNT 8
+#define NTRIP_CLIENTS 2
 
 struct RemoteNTRIPClient
 {
@@ -35,9 +36,8 @@ struct RemoteNTRIPClient
 
 std::vector<RemoteNTRIPClient> remoteNtripClients;
 uint32_t remoteNtripClientsTotal = 0;
-uint32_t rtcmBytesCasterForwarded = 0;  // Bytes forwarded by caster to clients
-uint32_t rtcmBytesServerForwarded = 0;  // Bytes forwarded by server to remote casters
-
+uint32_t rtcmBytesCasterForwarded = 0; // Bytes forwarded by caster to clients
+uint32_t rtcmBytesServerForwarded = 0; // Bytes forwarded by server to remote casters
 
 void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server);
 void handleCasterRequest(AsyncWebServerRequest *request);
@@ -205,7 +205,7 @@ typedef struct __ntrip_settings
 {
   uint32_t crc32;
   uint32_t version;
-  ntrip_server_settings_t server_settings[2];
+  ntrip_server_settings_t server_settings[NTRIP_CLIENTS];
   ntrip_caster_settings_t caster_settings;
 } ntrip_settings_t;
 
@@ -391,12 +391,15 @@ void Ntrip_Save_Settings(void)
 class NTRIPClient
 {
 public:
-  static constexpr uint32_t MAX_RETRIES = 1000;
-  static constexpr uint32_t RETRY_DELAY_MS = 5000; // 5 seconds
+  static constexpr uint32_t RECONNECT_DELAY = 30000;    // 30 seconds
 
-  NTRIPClient() : client(nullptr), connected(false), enabled(false),
-                  retryCount(0), nextRetryTime(0), lastConnectAttempt(0)
+  NTRIPClient()
+      : connected(false), enabled(false), connecting(false),
+        retryCount(0), nextRetryTime(0), lastConnectAttempt(0),
+        shouldReconnect(false), port(0)
   {
+    client = new AsyncClient();
+    setupClientCallbacks();
     memset(host, 0, sizeof(host));
     memset(mountpoint, 0, sizeof(mountpoint));
     memset(username, 0, sizeof(username));
@@ -405,55 +408,44 @@ public:
 
   ~NTRIPClient()
   {
-    disconnect();
     if (client)
     {
+      cleanupClient();
       delete client;
-      client = nullptr;
     }
   }
 
   void begin(const ntrip_server_settings_t &settings)
   {
-    if (!settings.enabled)
+    bool settingsChanged = false;
+
+    settingsChanged |= (enabled != settings.enabled);
+    settingsChanged |= (strcmp(host, settings.host) != 0);
+    settingsChanged |= (port != settings.port);
+    settingsChanged |= (strcmp(mountpoint, settings.mountpoint) != 0);
+    settingsChanged |= (strcmp(username, settings.username) != 0);
+    settingsChanged |= (strcmp(password, settings.password) != 0);
+
+    enabled = settings.enabled;
+    if (!enabled)
     {
-      enabled = false;
       disconnect();
       return;
     }
 
-    // Store settings
-    enabled = true;
     strlcpy(host, settings.host, sizeof(host));
     port = settings.port;
     strlcpy(mountpoint, settings.mountpoint, sizeof(mountpoint));
     strlcpy(username, settings.username, sizeof(username));
     strlcpy(password, settings.password, sizeof(password));
 
-    // Initialize client if needed
-    if (!client)
+    if (settingsChanged)
     {
-      client = new AsyncClient();
-      if (!client)
-      {
-        AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Failed to create AsyncClient"));
-        return;
-      }
-
-      client->onConnect([this](void *obj, AsyncClient *c)
-                        { handleConnect(c); });
-      client->onDisconnect([this](void *obj, AsyncClient *c)
-                           { handleDisconnect(c); });
-      client->onError([this](void *obj, AsyncClient *c, int8_t error)
-                      { handleError(c, error); });
-      client->onData([this](void *obj, AsyncClient *c, void *data, size_t len)
-                     { handleData(c, (uint8_t *)data, len); });
-    }
-
-    // Start connection if not already connected
-    if (!connected && !client->connecting())
-    {
-      connect();
+      AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Settings changed, scheduling reconnect"));
+      retryCount = 0;
+      shouldReconnect = true;
+      nextRetryTime = 0;
+      disconnect();
     }
   }
 
@@ -469,7 +461,6 @@ public:
     {
       return;
     }
-
     client->write(reinterpret_cast<const char *>(data), length);
   }
 
@@ -478,32 +469,32 @@ public:
     return connected;
   }
 
-  void retryConnect()
+  void checkConnection()
   {
-    if (!enabled || !client)
+    if (!enabled)
     {
       return;
     }
 
     uint32_t now = millis();
 
-    // Check if we need to retry connection
-    if (!connected && !client->connecting() && retryCount < MAX_RETRIES)
+    if (!connected && !connecting &&
+        now >= nextRetryTime &&
+        shouldReconnect)
     {
-      if (now >= nextRetryTime)
-      {
-        connect();
-      }
+      initiateConnect();
     }
   }
 
 private:
   AsyncClient *client;
-  bool connected;
+  volatile bool connected;
   bool enabled;
+  volatile bool connecting;
   uint32_t retryCount;
   uint32_t nextRetryTime;
   uint32_t lastConnectAttempt;
+  volatile bool shouldReconnect;
 
   char host[33];
   uint16_t port;
@@ -511,15 +502,63 @@ private:
   char username[33];
   char password[33];
 
-  void connect()
+  void disconnect()
   {
-    if (!client || client->connected() || client->connecting())
+    connected = false;
+    connecting = false;
+
+    if (client && (client->connected() || client->connecting()))
+    {
+      client->close(true);
+    }
+
+    cleanupClient();
+    setupClientCallbacks();
+  }
+
+  void cleanupClient()
+  {
+    if (!client)
+      return;
+
+    client->onConnect(nullptr);
+    client->onDisconnect(nullptr);
+    client->onError(nullptr);
+    client->onData(nullptr);
+  }
+
+  void setupClientCallbacks()
+  {
+    if (!client)
+      return;
+
+    client->onConnect([this](void *obj, AsyncClient *c)
+                      { handleConnect(c); });
+    client->onDisconnect([this](void *obj, AsyncClient *c)
+                         { handleDisconnect(c); });
+    client->onError([this](void *obj, AsyncClient *c, int8_t error)
+                    { handleError(c, error); });
+    client->onData([this](void *obj, AsyncClient *c, void *data, size_t len)
+                   { handleData(c, (uint8_t *)data, len); });
+
+    client->setRxTimeout(3);
+    client->setAckTimeout(3000);
+  }
+
+  void initiateConnect()
+  {
+    if (!enabled || connecting || connected)
     {
       return;
     }
 
     lastConnectAttempt = millis();
-    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Connecting to %s:%d..."), host, port);
+    retryCount++;
+    connecting = true;
+    shouldReconnect = false;
+
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Connecting to %s:%d (attempt %d)"),
+           host, port, retryCount);
 
     if (!client->connect(host, port))
     {
@@ -528,25 +567,19 @@ private:
     }
   }
 
-  void disconnect()
-  {
-    if (client && (client->connected() || client->connecting()))
-    {
-      client->close(true);
-    }
-    connected = false;
-  }
-
   void handleConnect(AsyncClient *c)
   {
     if (c != client)
       return;
 
-    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Connected to %s:%d"), host, port);
+    connecting = false;
     connected = true;
+    shouldReconnect = false;
     retryCount = 0;
+    nextRetryTime = 0;
 
-    // Send NTRIP request
+    AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Connected to %s:%d"), host, port);
+
     char request[512];
     createNTRIPRequest(request, sizeof(request));
     client->write(request, strlen(request));
@@ -558,15 +591,14 @@ private:
       return;
 
     connected = false;
+    connecting = false;
+    shouldReconnect = true;
+
     AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Disconnected from %s:%d"), host, port);
 
-    if (enabled && retryCount < MAX_RETRIES)
+    if (enabled)
     {
-      nextRetryTime = millis() + RETRY_DELAY_MS;
-      retryCount++;
-
-      AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Will retry in %d ms (attempt %d/%d)"),
-             RETRY_DELAY_MS, retryCount, MAX_RETRIES);
+      nextRetryTime = millis() + RECONNECT_DELAY;
     }
   }
 
@@ -575,8 +607,18 @@ private:
     if (c != client)
       return;
 
+    connected = false;
+    connecting = false;
+    shouldReconnect = true;
+
     AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Connection error %d"), error);
-    disconnect();
+
+    if (enabled)
+    {
+      nextRetryTime = millis() + RECONNECT_DELAY;
+      AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC: Will retry in %d seconds"),
+             RECONNECT_DELAY / 1000);
+    }
   }
 
   void handleData(AsyncClient *c, uint8_t *data, size_t len)
@@ -584,7 +626,6 @@ private:
     if (c != client || len == 0)
       return;
 
-    // Convert to null-terminated string for response checking
     char *response = (char *)malloc(len + 1);
     if (!response)
       return;
@@ -592,7 +633,6 @@ private:
     memcpy(response, data, len);
     response[len] = '\0';
 
-    // Check response code
     if (strstr(response, "200"))
     {
       AddLog(LOG_LEVEL_DEBUG, PSTR("NTRIPC: Server accepted connection"));
@@ -601,6 +641,8 @@ private:
     {
       AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Authentication failed"));
       disconnect();
+      shouldReconnect = true;
+      nextRetryTime = millis() + RECONNECT_DELAY;
     }
 
     free(response);
@@ -610,26 +652,28 @@ private:
   {
     char auth[192] = {0};
 
-    // Create the authentication header if credentials are provided.
     if (strlen(username) > 0)
     {
       const uint8_t credentials_buf_len = 65;
       char credentials[credentials_buf_len] = {0};
-      snprintf_P(credentials, sizeof(credentials), PSTR("%s:%s"), username, password);
+      snprintf_P(credentials, sizeof(credentials), PSTR("%s:%s"),
+                 username, password);
       size_t credentials_len = strnlen(credentials, sizeof(credentials));
 
       unsigned int encoded_len = encode_base64_length(credentials_len);
       if (encoded_len > credentials_buf_len * 4 / 3 + 2)
       {
-        AddLog(LOG_LEVEL_ERROR, PSTR("Credentials too long"));
+        AddLog(LOG_LEVEL_ERROR, PSTR("NTRIPC: Credentials too long"));
         buffer[0] = '\0';
         return;
       }
 
       char encoded[credentials_buf_len * 4 / 3 + 2] = {0};
-      encode_base64((unsigned char *)credentials, credentials_len, (unsigned char *)encoded);
+      encode_base64((unsigned char *)credentials, credentials_len,
+                    (unsigned char *)encoded);
 
-      snprintf_P(auth, sizeof(auth), PSTR("Authorization: Basic %s\r\n"), encoded);
+      snprintf_P(auth, sizeof(auth), PSTR("Authorization: Basic %s\r\n"),
+                 encoded);
     }
 
     snprintf_P(buffer, bufferSize,
@@ -646,11 +690,11 @@ private:
   }
 };
 
-NTRIPClient ntripClients[2];
+NTRIPClient ntripClients[NTRIP_CLIENTS];
 
 void initializeNTRIPClients()
 {
-  for (uint8_t i = 0; i < 2; i++)
+  for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
   {
     ntripClients[i].begin(NtripSettings.server_settings[i]);
   }
@@ -659,7 +703,7 @@ void initializeNTRIPClients()
 
 void NtripProcessNewSettings()
 {
-  for (uint8_t i = 0; i < 2; i++)
+  for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
   {
     ntripClients[i].begin(NtripSettings.server_settings[i]);
   }
@@ -1112,7 +1156,7 @@ void ProcessRTCMMessage(const uint8_t *data, size_t length)
   UpdateMessageStatistics(msg_type);
 
   // Forward to connected NTRIP casters and track bytes
-  for (uint8_t i = 0; i < 2; i++)
+  for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
   {
     if (ntripClients[i].isConnected())
     {
@@ -1127,9 +1171,9 @@ void ProcessRTCMMessage(const uint8_t *data, size_t length)
 
 void CheckNTRIPClients()
 {
-  for (uint8_t i = 0; i < 2; i++)
+  for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
   {
-    ntripClients[i].retryConnect();
+    ntripClients[i].checkConnection();
   }
 }
 
@@ -1162,7 +1206,7 @@ void RTCMShowWebSensor()
     WSContentSend_PD(PSTR("{s}NTRIP Server{m}{e}"));
     WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Bytes Forwarded{m}%d{e}"), rtcmBytesServerForwarded);
 
-    for (uint8_t i = 0; i < 2; i++)
+    for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
     {
       if (NtripSettings.server_settings[i].enabled)
       {
@@ -1201,7 +1245,7 @@ void RTCMShowJSON()
                    rtcmBytesServerForwarded);
 
   ResponseAppend_P(PSTR(",\"Status\":["));
-  for (uint8_t i = 0; i < 2; i++)
+  for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
   {
     if (i > 0)
       ResponseAppend_P(PSTR(","));
@@ -1214,8 +1258,6 @@ void RTCMShowJSON()
 
 bool Xdrv93(uint32_t function)
 {
-  bool result = false;
-
   switch (function)
   {
   case FUNC_INIT:
@@ -1225,7 +1267,7 @@ bool Xdrv93(uint32_t function)
     initializeNTRIPClients();
     rtcmInitializeCasterEndpoint(nullptr);
     break;
-  case FUNC_EVERY_100_MSECOND:
+  case FUNC_EVERY_250_MSECOND:
     CheckNTRIPClients();
     break;
   case FUNC_JSON_APPEND:
@@ -1250,7 +1292,7 @@ bool Xdrv93(uint32_t function)
   case FUNC_COMMAND:
     break;
   }
-  return result;
+  return true;
 }
 
 #endif // USE_NTRIP
