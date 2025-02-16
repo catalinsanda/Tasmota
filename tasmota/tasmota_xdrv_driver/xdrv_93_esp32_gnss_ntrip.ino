@@ -25,6 +25,7 @@
 #define XDRV_93 93
 #define MESSAGE_STATISTICS_COUNT 8
 #define NTRIP_CLIENTS 2
+#define D_CMND_NTRIP "NTRIP"
 
 struct RemoteNTRIPClient
 {
@@ -49,6 +50,13 @@ const char NTRIP_SOURCE_TABLE[] PROGMEM =
     "\r\n"
     "STR;%s;RTCM 3.2;1004(1),1005/1007(5),1074(1),1077(1),1084(1),1087(1),1094(1),1097(1),1124(1),1127(1);2;GPS+GLO+GAL+BDS;ESP32;ESP;0;;none;B;N;0;\r\n"
     "ENDSOURCETABLE\r\n";
+
+void CmndNTRIP(void);
+
+const char kNTRIPCommands[] PROGMEM = "|" D_CMND_NTRIP;
+
+void (* const NTRIPCommand[])(void) PROGMEM = {
+  &CmndNTRIP };
 
 #ifdef USE_WEBSERVER
 
@@ -391,7 +399,7 @@ void Ntrip_Save_Settings(void)
 class NTRIPClient
 {
 public:
-  static constexpr uint32_t RECONNECT_DELAY = 30000;    // 30 seconds
+  static constexpr uint32_t RECONNECT_DELAY = 30000; // 30 seconds
 
   NTRIPClient()
       : connected(false), enabled(false), connecting(false),
@@ -1081,6 +1089,144 @@ void rtcmInitializeCasterEndpoint(AsyncWebServer *ntrip_web_server)
 
 #endif // USE_WEBSERVER
 
+void CmndNTRIP(void) {
+  char* data = XdrvMailbox.data;
+  char* command = strtok(data, " ,");
+
+  // Current status
+  if (!command) {
+    Response_P(PSTR("{\"NTRIP\":{\"Caster\":{\"enabled\":%d,\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"},"),
+      NtripSettings.caster_settings.enabled,
+      NtripSettings.caster_settings.port,
+      NtripSettings.caster_settings.mountpoint,
+      NtripSettings.caster_settings.username);
+    
+    ResponseAppend_P(PSTR("\"Server1\":{\"enabled\":%d,\"host\":\"%s\",\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"},"),
+      NtripSettings.server_settings[0].enabled,
+      NtripSettings.server_settings[0].host,
+      NtripSettings.server_settings[0].port,
+      NtripSettings.server_settings[0].mountpoint,
+      NtripSettings.server_settings[0].username);
+    
+    ResponseAppend_P(PSTR("\"Server2\":{\"enabled\":%d,\"host\":\"%s\",\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"}}}"),
+      NtripSettings.server_settings[1].enabled,
+      NtripSettings.server_settings[1].host,
+      NtripSettings.server_settings[1].port,
+      NtripSettings.server_settings[1].mountpoint,
+      NtripSettings.server_settings[1].username);
+    return;
+  }
+
+  bool needs_save = false;
+
+    // Format: NTRIP caster enable,port,mountpoint,username,password
+    if (strcasecmp(command, "caster") == 0) {
+    char* enable = strtok(nullptr, " ,");
+    char* port = strtok(nullptr, " ,");
+    char* mount = strtok(nullptr, " ,");
+    char* user = strtok(nullptr, " ,");
+    char* pass = strtok(nullptr, " ,");
+
+    if (!enable) {
+      // Show current caster status
+      Response_P(PSTR("{\"NTRIPCaster\":{\"enabled\":%d,\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"}}"),
+        NtripSettings.caster_settings.enabled,
+        NtripSettings.caster_settings.port,
+        NtripSettings.caster_settings.mountpoint,
+        NtripSettings.caster_settings.username);
+      return;
+    }
+
+    needs_save |= (NtripSettings.caster_settings.enabled != (atoi(enable) > 0));
+    NtripSettings.caster_settings.enabled = atoi(enable) > 0;
+
+    if (port) {
+      needs_save |= (NtripSettings.caster_settings.port != atoi(port));
+      NtripSettings.caster_settings.port = atoi(port);
+    }
+    
+    if (mount) {
+      needs_save |= (strcmp(NtripSettings.caster_settings.mountpoint, mount) != 0);
+      strlcpy(NtripSettings.caster_settings.mountpoint, mount, sizeof(NtripSettings.caster_settings.mountpoint));
+    }
+    
+    if (user) {
+      needs_save |= (strcmp(NtripSettings.caster_settings.username, user) != 0);
+      strlcpy(NtripSettings.caster_settings.username, user, sizeof(NtripSettings.caster_settings.username));
+    }
+    
+    if (pass) {
+      needs_save |= (strcmp(NtripSettings.caster_settings.password, pass) != 0);
+      strlcpy(NtripSettings.caster_settings.password, pass, sizeof(NtripSettings.caster_settings.password));
+    }
+  }
+  else if (strcasecmp(command, "server1") == 0 || strcasecmp(command, "server2") == 0) {
+    // Format: NTRIP serverX enable,host,port,mountpoint,username,password
+    uint8_t index = (command[6] - '1'); 
+    if (index >= NTRIP_CLIENTS) {
+      ResponseCmndError();
+      return;
+    }
+
+    char* enable = strtok(nullptr, " ,");
+    char* host = strtok(nullptr, " ,");
+    char* port = strtok(nullptr, " ,");
+    char* mount = strtok(nullptr, " ,");
+    char* user = strtok(nullptr, " ,");
+    char* pass = strtok(nullptr, " ,");
+
+    if (!enable) {
+      Response_P(PSTR("{\"NTRIPServer%d\":{\"enabled\":%d,\"host\":\"%s\",\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"}}"),
+        index + 1,
+        NtripSettings.server_settings[index].enabled,
+        NtripSettings.server_settings[index].host,
+        NtripSettings.server_settings[index].port,
+        NtripSettings.server_settings[index].mountpoint,
+        NtripSettings.server_settings[index].username);
+      return;
+    }
+
+    needs_save |= (NtripSettings.server_settings[index].enabled != (atoi(enable) > 0));
+    NtripSettings.server_settings[index].enabled = atoi(enable) > 0;
+
+    if (host) {
+      needs_save |= (strcmp(NtripSettings.server_settings[index].host, host) != 0);
+      strlcpy(NtripSettings.server_settings[index].host, host, sizeof(NtripSettings.server_settings[index].host));
+    }
+    
+    if (port) {
+      needs_save |= (NtripSettings.server_settings[index].port != atoi(port));
+      NtripSettings.server_settings[index].port = atoi(port);
+    }
+    
+    if (mount) {
+      needs_save |= (strcmp(NtripSettings.server_settings[index].mountpoint, mount) != 0);
+      strlcpy(NtripSettings.server_settings[index].mountpoint, mount, sizeof(NtripSettings.server_settings[index].mountpoint));
+    }
+    
+    if (user) {
+      needs_save |= (strcmp(NtripSettings.server_settings[index].username, user) != 0);
+      strlcpy(NtripSettings.server_settings[index].username, user, sizeof(NtripSettings.server_settings[index].username));
+    }
+    
+    if (pass) {
+      needs_save |= (strcmp(NtripSettings.server_settings[index].password, pass) != 0);
+      strlcpy(NtripSettings.server_settings[index].password, pass, sizeof(NtripSettings.server_settings[index].password));
+    }
+  }
+  else {
+    ResponseCmndError();
+    return;
+  }
+
+  if (needs_save) {
+    NtripSettingsSave();
+    NtripProcessNewSettings();
+  }
+
+  ResponseCmndDone();
+}
+
 void InitializeMessageStatistics()
 {
   memset(message_statistics, 0, sizeof(message_statistics));
@@ -1258,6 +1404,8 @@ void RTCMShowJSON()
 
 bool Xdrv93(uint32_t function)
 {
+  bool result = false;
+
   switch (function)
   {
   case FUNC_INIT:
@@ -1266,33 +1414,42 @@ bool Xdrv93(uint32_t function)
     ntrip_settings_initialized = true;
     initializeNTRIPClients();
     rtcmInitializeCasterEndpoint(nullptr);
+    result = true;
+    break;
+  case FUNC_COMMAND:
+    result = DecodeCommand(kNTRIPCommands, NTRIPCommand);
     break;
   case FUNC_EVERY_250_MSECOND:
     CheckNTRIPClients();
+    result = true;
     break;
   case FUNC_JSON_APPEND:
     RTCMShowJSON();
+    result = true;
     break;
   case FUNC_SAVE_SETTINGS:
     NtripSettingsSave();
+    result = true;
     break;
 #ifdef USE_WEBSERVER
   case FUNC_WEB_SENSOR:
     RTCMShowWebSensor();
+    result = true;
     break;
     // #ifdef USE_NTRIP_WEB_MENU
   case FUNC_WEB_ADD_BUTTON:
     WSContentSend_P(HTTP_BTN_MENU_NTRIP);
+    result = true;
     break;
   case FUNC_WEB_ADD_HANDLER:
     WebServer_on(PSTR("/ntrip"), HandleNtripConfiguration);
+    result = true;
     break;
 // #endif // USE_NTRIP_WEB_MENU
 #endif // USE_WEBSERVER
-  case FUNC_COMMAND:
-    break;
   }
-  return true;
+
+  return result;
 }
 
 #endif // USE_NTRIP
