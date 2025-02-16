@@ -134,7 +134,9 @@
       "streambuf": "cpp",
       "thread": "cpp",
       "cinttypes": "cpp",
-      "typeinfo": "cpp"
+      "typeinfo": "cpp",
+      "be_fixed_be_class_serial.h": "c",
+      "queue": "cpp"
     },
     "C_Cpp.intelliSenseEngine": "Tag Parser"
   }
