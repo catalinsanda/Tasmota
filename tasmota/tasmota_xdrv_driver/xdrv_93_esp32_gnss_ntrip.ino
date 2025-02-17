@@ -36,7 +36,6 @@
 #define MESSAGE_STATISTICS_COUNT 10
 #define NTRIP_CLIENTS 2
 
-
 /*********************************************************************/
 /*                           GLOBAL DEFINES                          */
 /*********************************************************************/
@@ -66,7 +65,6 @@ struct __ntrip_server_settings
 
 struct __ntrip_caster_settings
 {
-  uint16_t port;
   bool enabled;
   char mountpoint[33];
   char username[33];
@@ -654,7 +652,6 @@ public:
 
 static void handleCasterRequest(AsyncWebServerRequest *request)
 {
-  // If caster is disabled or the endpoint wasn't set
   if (!NtripSettings.caster_settings.enabled || !caster_handler)
   {
     request->send(503, "text/plain", "NTRIP Caster not enabled");
@@ -686,7 +683,6 @@ static void handleCasterRequest(AsyncWebServerRequest *request)
     return;
   }
 
-  // Additional check for mountpoint mismatch
   if (strcmp(caster_mountpoint + 1, mountpoint.c_str()) != 0)
   {
     request->send(409, "text/plain", "Mountpoint configuration mismatch");
@@ -704,7 +700,6 @@ static void handleCasterRequest(AsyncWebServerRequest *request)
     }
   }
 
-  // Check max client limit
   if (remoteNtripClients.size() >= MAX_STREAMING_CLIENTS)
   {
     request->send(503, "text/plain", "Maximum number of clients reached");
@@ -964,28 +959,29 @@ static const char HTTP_FORM_NTRIP_CASTER[] PROGMEM =
     "<legend style='text-align:left; display:flex; align-items:center; gap:8px;'>"
     "<span style='color:white;'>" D_NTRIP_CASTER "</span>"
     "<input type='checkbox' id='ntrip_caster_enable' name='ntrip_caster_enable' "
-    "onchange='toggleNtripFields(this, [\"ntrip_cast_port\",\"ntrip_cast_mount\",\"ntrip_cast_user\",\"ntrip_cast_pass\"])' "
+    "onchange='toggleNtripFields(this, [\"ntrip_cast_mount\",\"ntrip_cast_user\",\"ntrip_cast_pass\"])' "
     "%s "
     "style='margin:0;'/>"
     "</legend>"
     "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr 100px 1fr; gap:10px; align-items:center; margin-bottom:10px;'>"
     "<label for='ntrip_cast_port' style='color:white;'>" D_NTRIP_PORT "</label>"
-    "<input type='number' id='ntrip_cast_port' name='ntrip_cast_port' value='%d' %s min='1' max='65535' placeholder='2101' "
-    "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
-    "<label for='ntrip_cast_mount' style='color:white;'>" D_NTRIP_MOUNT "</label>"
-    "<input type='text' id='ntrip_cast_mount' name='ntrip_cast_mount' value='%s' %s maxlength='32' "
-    "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
-    "</div>"
-    "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr; gap:10px; align-items:center;'>"
-    "<label for='ntrip_cast_user' style='color:white;'>" D_NTRIP_USERNAME "</label>"
-    "<input type='text' id='ntrip_cast_user' name='ntrip_cast_user' value='%s' %s maxlength='32' "
-    "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
-    "<label for='ntrip_cast_pass' style='color:white;'>" D_NTRIP_PASSWORD "</label>"
-    "<input type='text' id='ntrip_cast_pass' name='ntrip_cast_pass' value='%s' %s maxlength='32' "
-    "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
-    "</div>"
-    "<br>"
-    "</fieldset>";
+    "<input type='number' id='ntrip_cast_port' value='" STR(AUX_WEBSERVER_PORT) "' disabled "
+                                                                                "style='width:100%%; background:#333; color:#666; border:1px solid #555; padding:5px; cursor:not-allowed;' "
+                                                                                "title='Port is fixed to the auxiliary webserver port (" STR(AUX_WEBSERVER_PORT) ") set at compile time'/>"
+                                                                                                                                                                 "<label for='ntrip_cast_mount' style='color:white;'>" D_NTRIP_MOUNT "</label>"
+                                                                                                                                                                 "<input type='text' id='ntrip_cast_mount' name='ntrip_cast_mount' value='%s' %s maxlength='32' "
+                                                                                                                                                                 "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
+                                                                                                                                                                 "</div>"
+                                                                                                                                                                 "<div style='display:grid; grid-template-columns:100px 1fr 100px 1fr; gap:10px; align-items:center;'>"
+                                                                                                                                                                 "<label for='ntrip_cast_user' style='color:white;'>" D_NTRIP_USERNAME "</label>"
+                                                                                                                                                                 "<input type='text' id='ntrip_cast_user' name='ntrip_cast_user' value='%s' %s maxlength='32' "
+                                                                                                                                                                 "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
+                                                                                                                                                                 "<label for='ntrip_cast_pass' style='color:white;'>" D_NTRIP_PASSWORD "</label>"
+                                                                                                                                                                 "<input type='text' id='ntrip_cast_pass' name='ntrip_cast_pass' value='%s' %s maxlength='32' "
+                                                                                                                                                                 "style='width:100%%; background:#333; color:white; border:1px solid #555; padding:5px; transition:all 0.3s ease;' class='ntrip-input'/>"
+                                                                                                                                                                 "</div>"
+                                                                                                                                                                 "<br>"
+                                                                                                                                                                 "</fieldset>";
 #endif // USE_AUX_WEBSERVER
 
 /*********************************************************************/
@@ -1100,16 +1096,6 @@ static void Ntrip_Save_Settings(void)
     }
     NtripSettings.caster_settings.enabled = true;
 
-    if (Webserver->hasArg("ntrip_cast_port"))
-    {
-      stmp = Webserver->arg("ntrip_cast_port");
-      uint16_t port = stmp.toInt();
-      if (NtripSettings.caster_settings.port != port)
-      {
-        needs_save = true;
-      }
-      NtripSettings.caster_settings.port = port;
-    }
     if (Webserver->hasArg("ntrip_cast_mount"))
     {
       stmp = Webserver->arg("ntrip_cast_mount");
@@ -1258,8 +1244,6 @@ static void HandleNtripConfiguration(void)
   caster_html = ext_vsnprintf_malloc_P_wrapper(
       HTTP_FORM_NTRIP_CASTER,
       (NtripSettings.caster_settings.enabled ? "checked" : ""),
-      (NtripSettings.caster_settings.port ? NtripSettings.caster_settings.port : DEFAULT_NTRIP_PORT),
-      (NtripSettings.caster_settings.enabled ? "" : disabled_attr),
       NtripSettings.caster_settings.mountpoint,
       (NtripSettings.caster_settings.enabled ? "" : disabled_attr),
       NtripSettings.caster_settings.username,
@@ -1313,12 +1297,11 @@ void CmndNTRIP(void)
   // If no arguments, print status
   if (!command)
   {
-    // Print JSON style response
     Response_P(
         PSTR("{\"NTRIP\":{\"Caster\":{\"enabled\":%d,\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"},"),
 #ifdef USE_AUX_WEBSERVER
         NtripSettings.caster_settings.enabled,
-        NtripSettings.caster_settings.port,
+        AUX_WEBSERVER_PORT,
         NtripSettings.caster_settings.mountpoint,
         NtripSettings.caster_settings.username
 #else
@@ -1350,9 +1333,8 @@ void CmndNTRIP(void)
   if (strcasecmp(command, "caster") == 0)
   {
 #ifdef USE_AUX_WEBSERVER
-    // Format: NTRIP caster enable,port,mountpoint,username,password
+    // Format: NTRIP caster enable,mountpoint,username,password
     char *enable = strtok(nullptr, " ,");
-    char *port = strtok(nullptr, " ,");
     char *mount = strtok(nullptr, " ,");
     char *user = strtok(nullptr, " ,");
     char *pass = strtok(nullptr, " ,");
@@ -1363,7 +1345,7 @@ void CmndNTRIP(void)
       Response_P(
           PSTR("{\"NTRIPCaster\":{\"enabled\":%d,\"port\":%d,\"mount\":\"%s\",\"user\":\"%s\"}}"),
           NtripSettings.caster_settings.enabled,
-          NtripSettings.caster_settings.port,
+          AUX_WEBSERVER_PORT,
           NtripSettings.caster_settings.mountpoint,
           NtripSettings.caster_settings.username);
       return;
@@ -1376,15 +1358,6 @@ void CmndNTRIP(void)
     }
     NtripSettings.caster_settings.enabled = en;
 
-    if (port)
-    {
-      uint16_t new_port = atoi(port);
-      if (NtripSettings.caster_settings.port != new_port)
-      {
-        needs_save = true;
-      }
-      NtripSettings.caster_settings.port = new_port;
-    }
     if (mount)
     {
       if (strcmp(NtripSettings.caster_settings.mountpoint, mount) != 0)

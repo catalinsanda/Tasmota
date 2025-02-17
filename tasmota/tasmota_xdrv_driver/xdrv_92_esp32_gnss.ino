@@ -49,6 +49,7 @@ extern void ProcessRTCMMessage(const uint8_t *data, size_t length);
 #ifdef USE_AUX_WEBSERVER
 #define MAX_STREAMING_CLIENTS 10 // Maximum number of simultaneous streaming clients
 #define CLIENT_TIMEOUT 30000     // 30 seconds timeout for streaming clients
+#define AUX_WEBSERVER_PORT  8080
 #endif
 
 /*********************************************************************/
@@ -645,7 +646,7 @@ static void initAsyncServer()
 {
   if (!asyncServer)
   {
-    asyncServer = new AsyncWebServer(8080);
+    asyncServer = new AsyncWebServer(AUX_WEBSERVER_PORT);
 
     asyncServer->on("/gnss/serial", HTTP_GET, handleGNSSSerialRequest);
 
