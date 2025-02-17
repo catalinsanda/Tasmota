@@ -483,7 +483,7 @@ private:
     // Example request for NTRIP server
     snprintf_P(buffer, bufferSize,
                PSTR("POST /%s HTTP/1.1\r\n"
-                    "User-Agent: NTRIP ESP32Source/1.0\r\n"
+                    "User-Agent: NTRIP Tasmota/1.0\r\n"
                     "Host: %s\r\n"
                     "%s"
                     "Content-Type: application/x-rtcm\r\n"
@@ -567,6 +567,8 @@ static uint32_t remoteNtripClientsTotal = 0;
 /*               NTRIP SOURCE TABLE & CASTER HTTP HANDLER            */
 /*********************************************************************/
 
+
+// TODO(catalinsanda): based on stats generate the list of NTRIP messages and their frequency
 static const char NTRIP_SOURCE_TABLE[] PROGMEM =
     "SOURCETABLE 200 OK\r\n"
     "Server: NTRIP Tasmota32\r\n"
