@@ -138,7 +138,7 @@ static GNSSParser gnssParser;
 static HardwareSerial *gnssSerial = nullptr;
 
 static uint32_t last_rtc_sync = 0;
-static uint32_t bytes_received = 0;
+static uint64_t bytes_received = 0;
 
 #ifdef USE_AUX_WEBSERVER
 static AsyncWebServer *asyncServer = nullptr;
@@ -579,7 +579,7 @@ void GNSSShow(bool json)
   }
   else
   {
-    WSContentSend_PD(PSTR("{s}Serial bytes{m}%d{e}"), bytes_received);
+    WSContentSend_PD(PSTR("{s}Serial bytes{m}%_U{e}"), &bytes_received);
     WSContentSend_PD(PSTR("{s}GNSS Fix{m}%s{e}"), GNSSData.valid ? PSTR("Yes") : PSTR("No"));
     WSContentSend_PD(PSTR("{s}Last GNSS Fix{m}%s{e}"), GNSSData.last_valid_time);
     if (GNSSData.valid)

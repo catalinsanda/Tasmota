@@ -96,11 +96,6 @@ static __ntrip_settings NtripSettings;
  */
 static uint32_t rtcmBytesCasterForwarded = 0;
 
-/**
- * @brief Count of RTCM bytes forwarded by the server (device -> remote caster(s))
- */
-static uint32_t rtcmBytesServerForwarded = 0;
-
 /*********************************************************************/
 /*                   CLI FORWARD FUNCTIONS                           */
 /*********************************************************************/
@@ -260,6 +255,8 @@ public:
     strlcpy(username, settings.username, sizeof(username));
     strlcpy(password, settings.password, sizeof(password));
 
+    sentBytes = 0;
+
     if (settingsChanged)
     {
       AddLog(LOG_LEVEL_INFO, PSTR("NTRIPC[%d]: Settings changed, scheduling reconnect"), index);
@@ -347,6 +344,16 @@ public:
     return connected;
   }
 
+  uint64_t getBytesForwarded() const
+  {
+    return sentBytes;
+  }
+
+  void addBytesForwarded(size_t bytes)
+  {
+    sentBytes += bytes;
+  }
+
   void checkConnection()
   {
     if (!enabled)
@@ -378,6 +385,7 @@ private:
   std::vector<uint8_t> sendQueue;
   volatile bool sendInProgress;
   uint32_t droppedPackets;
+  uint64_t sentBytes;
 
   char host[33];
   uint16_t port;
@@ -1028,8 +1036,8 @@ static void ProcessRTCMMessage(const uint8_t *data, size_t length)
     if (ntripClients[i] != nullptr && ntripClients[i]->isConnected())
     {
       ntripClients[i]->sendData(data, length);
-      // TODO (catalinsanda): Add a way to track how many bytes were sent to each client
-      rtcmBytesServerForwarded += length;
+      // Update sent bytes for statistics, best effort as not all bytes may have been sent
+      ntripClients[i]->addBytesForwarded(length);
     }
   }
 
@@ -1676,19 +1684,21 @@ static void RTCMShowJSON()
   ResponseAppend_P(PSTR(",\"Caster\":{\"BytesForwarded\":0,\"Clients\":0}"));
 #endif
 
-  ResponseAppend_P(PSTR(",\"Server\":{\"BytesForwarded\":%d"), rtcmBytesServerForwarded);
-  ResponseAppend_P(PSTR(",\"Status\":["));
+  ResponseAppend_P(PSTR(",\"Server\":{"));
+  ResponseAppend_P(PSTR("\"Status\":["));
   for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
   {
     if (i > 0)
     {
       ResponseAppend_P(PSTR(","));
     }
-    ResponseAppend_P(PSTR("{\"enabled\":%d,\"connected\":%d}"),
+    uint64_t bytesForwarded = (ntripClients[i] != nullptr) ? ntripClients[i]->getBytesForwarded() : 0;
+    ResponseAppend_P(PSTR("{\"enabled\":%d,\"connected\":%d, \"bytesForwarded\":%_U}"),
                      NtripSettings.server_settings[i].enabled,
-                     (ntripClients[i] != nullptr) ? ntripClients[i]->isConnected() : 0);
+                     (ntripClients[i] != nullptr) ? ntripClients[i]->isConnected() : 0,
+                     &bytesForwarded);
   }
-  ResponseAppend_P(PSTR("]}}}")); // close "Status", "Server", "RTCM"
+  ResponseAppend_P(PSTR("]}}")); // close "Status", "Server", "RTCM"
 }
 
 #ifdef USE_WEBSERVER
@@ -1721,16 +1731,17 @@ static void RTCMShowWebSensor()
 
     // Show NTRIP Server stats
     WSContentSend_PD(PSTR("{s}NTRIP Server{m}{e}"));
-    WSContentSend_PD(PSTR("{s}&nbsp;&nbsp;• Bytes Forwarded{m}%d{e}"), rtcmBytesServerForwarded);
 
     for (uint8_t i = 0; i < NTRIP_CLIENTS; i++)
     {
       if (NtripSettings.server_settings[i].enabled)
       {
+        uint64_t bytesForwarded = (ntripClients[i] != nullptr) ? ntripClients[i]->getBytesForwarded() : 0;
         WSContentSend_PD(
-            PSTR("{s}&nbsp;&nbsp;• Server %d Status{m}%s{e}"),
+            PSTR("{s}&nbsp;&nbsp;• Server %d Status{m}%s&nbsp;(%_U){e}"),
             i + 1,
-            (ntripClients[i] != nullptr && ntripClients[i]->isConnected()) ? PSTR("Connected") : PSTR("Disconnected"));
+            (ntripClients[i] != nullptr && ntripClients[i]->isConnected()) ? PSTR("Connected") : PSTR("Disconnected"),
+            &bytesForwarded);
       }
     }
   }
